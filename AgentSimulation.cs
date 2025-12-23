@@ -2,85 +2,113 @@ using Godot;
 using System;
 using System.Runtime.InteropServices;
 
-// --- PARTE 1: La Estructura de Datos (El molde) ---
-// Debe estar alineada a 16 bytes para coincidir con el GLSL (std430)
+// --- ESTRUCTURA ---
 [StructLayout(LayoutKind.Sequential, Pack = 16)]
 public struct AgentData
 {
-	public Vector4 Position; // x,y,z, padding
-	public Vector4 Target;   // x,y,z, padding
-	public Vector4 Velocity; // x,y,z, speed
-	public Vector4 Color;    // r,g,b,a
+	public Vector4 Position;
+	public Vector4 Target;
+	public Vector4 Velocity;
+	public Vector4 Color;
 }
 
-// --- PARTE 2: La Clase Principal (El orquestador) ---
 public partial class AgentSimulation : Node3D
 {
-	[Export] public int AgentCount = 20; 
-	[Export] public RDShaderFile ComputeShaderFile; 
-	[Export] public Mesh AgentMesh; 
+	[Export] public int AgentCount = 2000; // Subimos a 2000 para probar rendimiento
+	[Export] public RDShaderFile ComputeShaderFile;
+	[Export] public Mesh AgentMesh;
 
 	private RenderingDevice _rd;
 	private Rid _shaderRid;
 	private Rid _pipelineRid;
-	private Rid _bufferRid;
+	
+	private Rid _agentBufferRid;
+	private Rid _gridBufferRid; // NUEVO
 	private Rid _uniformSetRid;
 
 	private MultiMeshInstance3D _visualizer;
 	private AgentData[] _cpuAgents;
 
+	// Configuración Grilla
+	private float _mapDepth = 100.0f;
+	private float _cellSize = 2.0f; // Tamaño de celda
+	private int _gridDim;           // Celdas por lado
+
 	public override void _Ready()
 	{
-		if (ComputeShaderFile == null || AgentMesh == null)
-		{
-			GD.PrintErr("ERROR: Asigna el Shader y el Mesh en el Inspector.");
-			return;
-		}
+		if (ComputeShaderFile == null || AgentMesh == null) return;
+
+		// Calcular dimensión de grilla (ej. 100 / 2 = 50 celdas de lado)
+		_gridDim = Mathf.CeilToInt(_mapDepth / _cellSize);
 
 		SetupData();
 		SetupCompute();
 		SetupVisuals();
+		SetupMarkers();
+	}
 
-		// --- NUEVO: Crear marcadores de Inicio/Fin ---
-		float centerZ = AgentCount; // Punto medio aproximado en Z (si son 20 agentes, Z~20)
-		
-		// Equipo Azul (A): Empieza en X=0, va a X=50
-		CreateMarkerBox(new Vector3(0, 0, centerZ), Colors.Blue, "Start_A_Blue");
-		CreateMarkerBox(new Vector3(50, 0, centerZ), Colors.Cyan, "Target_A_Cyan");
-
-		// Equipo Rojo (B): Empieza en X=50, va a X=0
-		CreateMarkerBox(new Vector3(50, 0, centerZ), Colors.Red, "Start_B_Red");
-		CreateMarkerBox(new Vector3(0, 0, centerZ), Colors.Orange, "Target_B_Orange");
-		// -------------------------------------------
-
+	private void SetupMarkers()
+	{
+		float centerZ = _mapDepth / 2.0f;
+		float centerX = 50.0f; // Asumiendo ancho X=100 aprox o fijo 50
+		CreateMarkerBox(new Vector3(0, 0, centerZ), Colors.Blue, "Start_A");
+		CreateMarkerBox(new Vector3(50, 0, centerZ), Colors.Cyan, "Target_A");
+		CreateMarkerBox(new Vector3(50, 0, centerZ), Colors.Red, "Start_B");
+		CreateMarkerBox(new Vector3(0, 0, centerZ), Colors.Orange, "Target_B");
 	}
 
 
 	private void SetupData()
 	{
 		_cpuAgents = new AgentData[AgentCount];
-		
-		// Inicialización de datos
+		Vector3 targetA = new Vector3(50, 0, _mapDepth / 2.0f);
+		Vector3 targetB = new Vector3(0, 0, _mapDepth / 2.0f);
+
+		// Configuración de la formación
+		float spacing = 1.5f; // 1.5m de separación (Radio 0.5 + 0.5 + 0.5 aire)
+		int agentsPerRow = 50; // Cuántos agentes por fila antes de empezar una nueva fila detrás
+
 		for (int i = 0; i < AgentCount; i++)
 		{
-			bool isTeamA = i < (AgentCount / 2); // Mitad azules, mitad rojos
-			
-			// A va de (0,0,Z) a (50,0,Z). B va de (50,0,Z) a (0,0,Z)
-			float zPos = i * 2.0f;
-			
-			Vector3 start = isTeamA ? new Vector3(0, 0, zPos) : new Vector3(50, 0, zPos);
-			Vector3 target = isTeamA ? new Vector3(50, 0, zPos) : new Vector3(0, 0, zPos);
-			Vector4 color = isTeamA ? new Vector4(0, 0, 1, 1) : new Vector4(1, 0, 0, 1);
+			int teamSize = AgentCount / 2;
+			bool isTeamA = i < teamSize;
+			int idxInTeam = i % teamSize;
+
+			// --- LÓGICA DE GRILLA ---
+			// Calculamos fila y columna
+			int row = idxInTeam / agentsPerRow; // Profundidad (Eje X)
+			int col = idxInTeam % agentsPerRow; // Anchura (Eje Z)
+
+			// Offset en Z para centrarlos en el mapa
+			float formationWidth = agentsPerRow * spacing;
+			float zStartOffset = (_mapDepth - formationWidth) / 2.0f;
+			float zPos = zStartOffset + (col * spacing);
+
+			// Offset en X (Profundidad): Los acumulamos hacia ATRÁS de su línea de salida
+			// Team A (X=0) se forma hacia X negativos (-1.5, -3.0...)
+			// Team B (X=50) se forma hacia X positivos (51.5, 53.0...)
+			float xPos;
+			if (isTeamA)
+				xPos = 0.0f - (row * spacing); 
+			else
+				xPos = 50.0f + (row * spacing);
+
+			Vector3 start = new Vector3(xPos, 0, zPos);
+			Vector3 target = isTeamA ? targetA : targetB;
+			Vector4 color = isTeamA ? new Vector4(0, 0.5f, 1, 1) : new Vector4(1, 0.2f, 0, 1);
 
 			_cpuAgents[i] = new AgentData
 			{
-				Position = new Vector4(start.X, start.Y, start.Z, 1.0f),
+				Position = new Vector4(start.X, start.Y, start.Z, 0.5f),
 				Target = new Vector4(target.X, target.Y, target.Z, 0.0f),
-				Velocity = new Vector4(0, 0, 0, 10.0f), // Velocidad base 10
+				Velocity = new Vector4(0, 0, 0, 10.0f), // Velocidad rápida
 				Color = color
 			};
 		}
 	}
+
+
+
 
 	private void SetupCompute()
 	{
@@ -90,17 +118,28 @@ public partial class AgentSimulation : Node3D
 		_shaderRid = _rd.ShaderCreateFromSpirV(shaderSpirv);
 		_pipelineRid = _rd.ComputePipelineCreate(_shaderRid);
 
-		int bytes = Marshal.SizeOf<AgentData>() * AgentCount;
-		byte[] initData = StructureToByteArray(_cpuAgents);
-		_bufferRid = _rd.StorageBufferCreate((uint)bytes, initData);
+		// 1. Buffer de Agentes
+		int agentBytes = Marshal.SizeOf<AgentData>() * AgentCount;
+		byte[] agentData = StructureToByteArray(_cpuAgents);
+		_agentBufferRid = _rd.StorageBufferCreate((uint)agentBytes, agentData);
 
-		var uniform = new RDUniform
-		{
-			UniformType = RenderingDevice.UniformType.StorageBuffer,
-			Binding = 0
-		};
-		uniform.AddId(_bufferRid);
-		_uniformSetRid = _rd.UniformSetCreate(new Godot.Collections.Array<RDUniform> { uniform }, _shaderRid, 0);
+		// 2. Buffer de Grilla (NUEVO)
+		// Tamaño = (GridDim * GridDim) * (1 uint count + 32 uints ids) * 4 bytes
+		int cellsTotal = _gridDim * _gridDim;
+		int strideInts = 1 + 32; // 33 ints por celda
+		int gridBytes = cellsTotal * strideInts * 4;
+		// Inicializamos con ceros
+		byte[] gridInitData = new byte[gridBytes]; 
+		_gridBufferRid = _rd.StorageBufferCreate((uint)gridBytes, gridInitData);
+
+		// 3. Uniform Set (Binding 0: Agentes, Binding 1: Grilla)
+		var uniformAgents = new RDUniform { UniformType = RenderingDevice.UniformType.StorageBuffer, Binding = 0 };
+		uniformAgents.AddId(_agentBufferRid);
+		
+		var uniformGrid = new RDUniform { UniformType = RenderingDevice.UniformType.StorageBuffer, Binding = 1 };
+		uniformGrid.AddId(_gridBufferRid);
+
+		_uniformSetRid = _rd.UniformSetCreate(new Godot.Collections.Array<RDUniform> { uniformAgents, uniformGrid }, _shaderRid, 0);
 	}
 
 	private void SetupVisuals()
@@ -114,6 +153,8 @@ public partial class AgentSimulation : Node3D
 		};
 		
 		_visualizer = new MultiMeshInstance3D { Multimesh = multiMesh };
+		// AABB Manual crítico
+		_visualizer.CustomAabb = new Aabb(new Vector3(-10, -10, -10), new Vector3(120, 50, 120));
 		AddChild(_visualizer);
 	}
 
@@ -121,26 +162,32 @@ public partial class AgentSimulation : Node3D
 	{
 		if (_rd == null) return;
 
-		// 1. Enviar Delta Time
-		float[] pushConstants = { (float)delta, 2.0f, 0.0f, 0.0f };
-		byte[] pushBytes = new byte[pushConstants.Length * 4];
-		Buffer.BlockCopy(pushConstants, 0, pushBytes, 0, pushBytes.Length);
-
-		// 2. Ejecutar Compute Shader
-		var computeList = _rd.ComputeListBegin();
-		_rd.ComputeListBindComputePipeline(computeList, _pipelineRid);
-		_rd.ComputeListBindUniformSet(computeList, _uniformSetRid, 0);
-		_rd.ComputeListSetPushConstant(computeList, pushBytes, (uint)pushBytes.Length);
+		// struct Params { delta, time, phase, map_size, cell_size, grid_dim }
+		// float, float, uint, float, float, uint = 6 valores de 4 bytes = 24 bytes
+		// Alineación std430 en push constant puede ser delicada, usamos floats para todo lo posible o pack manual.
+		// En GLSL definimos: float, float, uint, float, float, uint. 
+		// Para seguridad en C#, usaremos un array de bytes crudo.
 		
-		uint groups = (uint)Mathf.CeilToInt(AgentCount / 64.0f);
-		_rd.ComputeListDispatch(computeList, groups, 1, 1);
-		_rd.ComputeListEnd();
+		// Fase 0: Clear Grid
+		DispatchPhase(0, (float)delta, _gridDim * _gridDim); // Hilos = Cantidad de celdas
+		
+		// Barrier: Asegurar que Clear termine antes de Populate
+		_rd.Barrier(RenderingDevice.BarrierMask.Compute);
 
-		// 3. Esperar GPU y Leer Datos
+		// Fase 1: Populate Grid
+		DispatchPhase(1, (float)delta, AgentCount); // Hilos = Cantidad de agentes
+		
+		// Barrier: Asegurar que Populate termine antes de Update
+		_rd.Barrier(RenderingDevice.BarrierMask.Compute);
+
+		// Fase 2: Update Simulation
+		DispatchPhase(2, (float)delta, AgentCount); // Hilos = Cantidad de agentes
+
+		// Descarga y Render
 		_rd.Submit();
-		_rd.Sync(); 
+		_rd.Sync();
 
-		byte[] outputBytes = _rd.BufferGetData(_bufferRid);
+		byte[] outputBytes = _rd.BufferGetData(_agentBufferRid);
 		_cpuAgents = ByteArrayToStructure<AgentData>(outputBytes, AgentCount);
 
 		// 4. Actualizar Visualización
@@ -149,43 +196,71 @@ public partial class AgentSimulation : Node3D
 			var agent = _cpuAgents[i];
 			
 			Transform3D t = Transform3D.Identity;
-			t.Origin = new Vector3(agent.Position.X, agent.Position.Y, agent.Position.Z);
+			Vector3 pos = new Vector3(agent.Position.X, agent.Position.Y, agent.Position.Z);
+			Vector3 vel = new Vector3(agent.Velocity.X, agent.Velocity.Y, agent.Velocity.Z);
+
+			// 1. Asignar posición
+			t.Origin = pos;
+
+			// 2. Asignar rotación (LookAt)
+			// Solo rotamos si hay movimiento significativo para evitar errores matemáticos con vector cero
+			if (vel.LengthSquared() > 0.1f) 
+			{
+				// Mirar hacia: Posición Actual + Dirección de Velocidad
+				// Vector3.Up es el vector "arriba" del mundo
+				t = t.LookingAt(pos + vel, Vector3.Up); 
+			}
 			
 			_visualizer.Multimesh.SetInstanceTransform(i, t);
 			_visualizer.Multimesh.SetInstanceColor(i, new Color(agent.Color.X, agent.Color.Y, agent.Color.Z));
 		}
 	}
 
-	// --- Helpers Técnicos ---
-	
-	// Helper para crear marcadores visuales simples
+	private void DispatchPhase(uint phase, float delta, int threadCount)
+	{
+		var computeList = _rd.ComputeListBegin();
+		_rd.ComputeListBindComputePipeline(computeList, _pipelineRid);
+		_rd.ComputeListBindUniformSet(computeList, _uniformSetRid, 0);
+
+		// --- CORRECCIÓN DE ALINEACIÓN ---
+		// Total enviado: 32 bytes (8 floats/uints x 4 bytes)
+		// Esto asegura compatibilidad con cualquier GPU (Nvidia/AMD/Intel)
+		var stream = new System.IO.MemoryStream();
+		var writer = new System.IO.BinaryWriter(stream);
+		
+		writer.Write((float)delta);                     // Offset 0
+		writer.Write((float)Time.GetTicksMsec() / 1000.0f); // Offset 4
+		writer.Write((uint)phase);                      // Offset 8
+		writer.Write((float)100.0f);                    // Offset 12 (MapSize)
+		writer.Write((float)_cellSize);                 // Offset 16
+		writer.Write((uint)_gridDim);                   // Offset 20
+		
+		// Rellenamos con 2 ceros extra para llegar a 32 bytes (múltiplo de 16)
+		writer.Write((float)0.0f);                      // Offset 24 (Padding)
+		writer.Write((float)0.0f);                      // Offset 28 (Padding)
+
+		byte[] pushBytes = stream.ToArray();
+		_rd.ComputeListSetPushConstant(computeList, pushBytes, (uint)pushBytes.Length);
+
+		uint groups = (uint)Mathf.CeilToInt(threadCount / 64.0f);
+		_rd.ComputeListDispatch(computeList, groups, 1, 1);
+		_rd.ComputeListEnd();
+	}
+
+	// Helpers previos (CreateMarkerBox, StructureToByteArray, etc) se mantienen igual...
 	private void CreateMarkerBox(Vector3 position, Color color, string name)
 	{
-		// 1. Crear la malla (Cubo) y su material
 		var boxMesh = new BoxMesh();
-		// Hacemos los marcadores un poco más grandes (escala 2,5,2) y altos
-		boxMesh.Size = new Vector3(2.0f, 5.0f, 2.0f); 
-
+		boxMesh.Size = new Vector3(2.0f, 10.0f, 2.0f); 
 		var material = new StandardMaterial3D();
-		material.AlbedoColor = color;
-		// Hacerlo semitransparente para que se vea "fantasmal" (opcional)
 		material.Transparency = BaseMaterial3D.TransparencyEnum.Alpha;
 		material.AlbedoColor = new Color(color.R, color.G, color.B, 0.5f);
-
 		boxMesh.Material = material;
-
-		// 2. Crear la instancia y añadirla a la escena
-		var meshInstance = new MeshInstance3D
-		{
-			Mesh = boxMesh,
-			Position = new Vector3(position.X, position.Y + 2.5f, position.Z), // Elevamos un poco Y
-			Name = name
-		};
+		var meshInstance = new MeshInstance3D { Mesh = boxMesh, Position = position, Name = name };
 		AddChild(meshInstance);
 	}
 
-	private byte[] StructureToByteArray(AgentData[] data)
-	{
+	private byte[] StructureToByteArray(AgentData[] data) {
 		int size = Marshal.SizeOf<AgentData>();
 		byte[] arr = new byte[size * data.Length];
 		GCHandle handle = GCHandle.Alloc(data, GCHandleType.Pinned);
@@ -194,8 +269,7 @@ public partial class AgentSimulation : Node3D
 		return arr;
 	}
 
-	private AgentData[] ByteArrayToStructure<T>(byte[] bytes, int count) where T : struct
-	{
+	private AgentData[] ByteArrayToStructure<T>(byte[] bytes, int count) where T : struct {
 		AgentData[] data = new AgentData[count];
 		int size = Marshal.SizeOf<T>();
 		GCHandle handle = GCHandle.Alloc(data, GCHandleType.Pinned);
@@ -203,13 +277,14 @@ public partial class AgentSimulation : Node3D
 		finally { handle.Free(); }
 		return data;
 	}
-	
+
 	public override void _Notification(int what)
 	{
 		if (what == NotificationPredelete && _rd != null)
 		{
 			_rd.FreeRid(_uniformSetRid);
-			_rd.FreeRid(_bufferRid);
+			_rd.FreeRid(_agentBufferRid);
+			_rd.FreeRid(_gridBufferRid); // Liberar Grid
 			_rd.FreeRid(_pipelineRid);
 			_rd.FreeRid(_shaderRid);
 			_rd.Free();
