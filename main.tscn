@@ -1,0 +1,23 @@
+[gd_scene load_steps=5 format=3 uid="uid://bfm3yj7yc5wm7"]
+
+[ext_resource type="Script" uid="uid://4oqhmfcfpnk2" path="res://AgentSimulation.cs" id="1_ig7tw"]
+[ext_resource type="RDShaderFile" uid="uid://bbculi8jj5vwe" path="res://simulation.glsl" id="2_0xm2m"]
+
+[sub_resource type="StandardMaterial3D" id="StandardMaterial3D_0xm2m"]
+vertex_color_use_as_albedo = true
+
+[sub_resource type="SphereMesh" id="SphereMesh_h2yge"]
+material = SubResource("StandardMaterial3D_0xm2m")
+
+[node name="Node3D" type="Node3D"]
+
+[node name="Node3D" type="Node3D" parent="."]
+script = ExtResource("1_ig7tw")
+ComputeShaderFile = ExtResource("2_0xm2m")
+AgentMesh = SubResource("SphereMesh_h2yge")
+
+[node name="Camera3D" type="Camera3D" parent="."]
+transform = Transform3D(1, 0, 0, 0, 0.70710677, 0.70710677, 0, -0.70710677, 0.70710677, 25, 30, 40)
+
+[node name="DirectionalLight3D" type="DirectionalLight3D" parent="."]
+transform = Transform3D(1, 0, 0, 0, 0.7071068, 0.7071068, 0, -0.7071068, 0.7071068, 25, 30, 40)
