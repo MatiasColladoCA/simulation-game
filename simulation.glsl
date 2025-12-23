@@ -70,6 +70,11 @@ void phase_populate() {
     uint idx = gl_GlobalInvocationID.x;
     if (idx >= agents.length()) return;
 
+    // --- CAMBIO: Ignorar Muertos (0.0) y Salvados (2.0) ---
+    // Si no está vivo (aprox 1.0), no lo metemos en la grilla.
+    // Esto evita que los que ya llegaron bloqueen a los que vienen.
+    if (agents[idx].color.w < 0.5 || agents[idx].color.w > 1.5) return;
+
     vec3 pos = agents[idx].position.xyz;
     int cell_idx = get_cell_index(pos);
     
@@ -88,22 +93,35 @@ void phase_update() {
     uint idx = gl_GlobalInvocationID.x;
     if (idx >= agents.length()) return;
 
-    // 1. CHECK DE VIDA
-    if (agents[idx].color.w < 0.1) return;
+    // --- 1. CHECK DE ESTADO ---
+    float status = agents[idx].color.w;
+    
+    // Si ya no está vivo (es 0.0 o 2.0), no gastamos energía.
+    if (status < 0.5 || status > 1.5) return;
 
     vec3 pos = agents[idx].position.xyz;
     float radius = agents[idx].position.w; // 0.5
     vec3 vel = agents[idx].velocity.xyz;
     vec3 target = agents[idx].target.xyz;
     float max_speed = agents[idx].velocity.w;
+    
+    // Calculamos distancia para saber si llegó
+    float dist_target = distance(pos, target);
+
+    // --- 2. LÓGICA DE EXTRACCIÓN (NUEVO) ---
+    // Si está a menos de 1.5m del centro del objetivo, gana y desaparece.
+    if (dist_target < 1.5) {
+        agents[idx].color.w = 2.0;        // Estado: Salvado (2.0)
+        agents[idx].velocity = vec4(0.0); // Frenar
+        return;                           // Salir inmediatamente (dejamos de procesar física)
+    }
 
     // --- CAPA 1: NAVEGACIÓN (Arrive + Steering) ---
     vec3 acc = vec3(0.0);
     vec3 to_target = target - pos;
-    float dist_target = length(to_target);
+    // (Nota: dist_target ya la calculamos arriba)
 
     // Arrive: Desacelerar suavemente al llegar
-    // Radio de frenado: 15 metros.
     float slowing_radius = 15.0;
     float target_speed = max_speed;
     
@@ -113,18 +131,14 @@ void phase_update() {
     
     vec3 desired_vel = normalize(to_target) * target_speed;
     
-    // Steering Force: Qué tan rápido corregimos el rumbo
+    // Steering Force
     acc += (desired_vel - vel) * 2.0; 
 
     // --- CAPA 2: SEPARACIÓN SOCIAL (Cortesía) ---
-    // Actúa ANTES de tocarse. Queremos mantener 1.5m de distancia si es posible.
-    // radius (0.5) + radius (0.5) + personal_space (0.5) = 1.5
     float social_threshold = radius * 3.0; 
-    vec3 social_force = vec3(0.0);
-
+    
     // Integramos velocidad (Euler)
     vel += acc * params.delta_time;
-    // Limitamos velocidad máxima
     if (length(vel) > max_speed) vel = normalize(vel) * max_speed;
     
     vec3 predicted_pos = pos + vel * params.delta_time;
@@ -133,7 +147,6 @@ void phase_update() {
     int my_cell_x = int(clamp(predicted_pos.x / params.cell_size, 0.0, float(params.grid_dim - 1)));
     int my_cell_z = int(clamp(predicted_pos.z / params.cell_size, 0.0, float(params.grid_dim - 1)));
 
-    int contact_count = 0;      // Cuántos me tocan físicamente
     float total_overlap = 0.0;  // Cuánto me están aplastando
 
     for (int x = -1; x <= 1; x++) {
@@ -150,7 +163,9 @@ void phase_update() {
                 for (uint i = 0; i < count; i++) {
                     uint other_idx = grid_data[cell_idx * STRIDE + 1 + i];
                     if (other_idx == idx) continue;
-                    if (agents[other_idx].color.w < 0.1) continue; // Ignorar muertos
+                    
+                    // Ignorar muertos (0.0) y salvados (2.0) para colisiones
+                    if (agents[other_idx].color.w < 0.5 || agents[other_idx].color.w > 1.5) continue; 
 
                     vec3 other_pos = agents[other_idx].position.xyz;
                     float other_radius = agents[other_idx].position.w;
@@ -159,30 +174,20 @@ void phase_update() {
                     float dist = length(diff);
                     float physical_dist = radius + other_radius; // 1.0m
 
-                    // A) FUERZA SOCIAL (Cortesía)
-                    // Si está cerca pero no tocando (entre 1.0m y 1.5m), empujar suavemente con steering
+                    // A) FUERZA SOCIAL
                     if (dist < social_threshold && dist > physical_dist) {
                         float power = (social_threshold - dist) / (social_threshold - physical_dist);
                         vec3 push_dir = normalize(diff);
-                        // Esto modifica la VELOCIDAD futura, no la posición actual
                         vel += push_dir * power * 10.0 * params.delta_time; 
                     }
 
-                    // B) CORRECCIÓN FÍSICA (Contacto)
-                    // Si está tocando (dist < 1.0m)
+                    // B) CORRECCIÓN FÍSICA
                     if (dist < physical_dist && dist > 0.0001) {
                         float overlap = physical_dist - dist;
                         vec3 push_dir = normalize(diff);
-                        
-                        // FACTOR DE RIGIDEZ ("Stiffness"): 
-                        // 0.5 = Rígido (resuelve 100% del choque repartido entre dos).
-                        // 0.1 = Esponjoso (cede ante la presión).
-                        // Usamos 0.2 para permitir que la multitud se comprima.
-                        float stiffness = 0.2; 
+                        float stiffness = 0.2; // Esponjoso
                         
                         predicted_pos += push_dir * (overlap * stiffness);
-                        
-                        contact_count++;
                         total_overlap += overlap;
                     }
                 }
@@ -191,10 +196,8 @@ void phase_update() {
     }
 
     // --- CAPA 4: MUERTE POR PRESIÓN EXTREMA ---
-    // Si la compresión total (suma de overlaps) es muy alta, muere.
-    // Esto es mejor que solo contar vecinos, porque mide "cuánto" te aplastan.
-    if (total_overlap > 1.5) { // 1.5 metros de solapamiento acumulado es letal
-        agents[idx].color = vec4(0.0, 0.0, 0.0, 0.0);
+    if (total_overlap > 1.5) { 
+        agents[idx].color = vec4(0.0, 0.0, 0.0, 0.0); // Muerto
         agents[idx].velocity = vec4(0.0);
         return;
     }

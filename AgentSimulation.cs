@@ -227,42 +227,47 @@ public partial class AgentSimulation : Node3D
 
 
 		// 4. Actualizar Visualización
+			// ... inicio del bucle for ...
 		for (int i = 0; i < AgentCount; i++)
 		{
 			var agent = _cpuAgents[i];
-		
-			// Datos crudos
+			
+			// Interpretamos el estado desde W
+			float status = agent.Color.W;
+			bool isDead = status < 0.5f;       // Cerca de 0.0
+			bool isArrived = status > 1.5f;    // Cerca de 2.0 (NUEVO)
+			
 			Vector3 pos = new Vector3(agent.Position.X, agent.Position.Y, agent.Position.Z);
 			Vector3 vel = new Vector3(agent.Velocity.X, agent.Velocity.Y, agent.Velocity.Z);
-			bool isDead = agent.Color.W < 0.1f;
-			
-			// --- LÓGICA DE CONTEO ---
+
+			// --- LÓGICA DE CONTEO Y VISUALIZACIÓN ---
+			Transform3D t = Transform3D.Identity;
+			t.Origin = pos;
+
 			if (isDead)
 			{
 				deadCount++;
-				// Visualización: No rotamos cadáveres, los dejamos tirados
+				// Los muertos se quedan visibles como "manchas" o los ocultamos si prefieres
+				// t = t.Scaled(Vector3.Zero); // Descomentar para ocultar cadáveres también
 			}
-			else
+			else if (isArrived)
 			{
-				// Chequear si llegaron al objetivo
-				bool isTeamA = i < (AgentCount / 2);
-				Vector3 myTarget = isTeamA ? targetPosA : targetPosB;
-				
-				// Distancia al cuadrado es más rápida (evita raíz cuadrada)
-				if (pos.DistanceSquaredTo(myTarget) < (arrivalRadius * arrivalRadius))
-				{
-					if (isTeamA) arrivedA++;
-					else arrivedB++;
-				}
+				// Contabilizar por equipo
+				if (i < AgentCount / 2) arrivedA++;
+				else arrivedB++;
+
+				// --- MAGIA VISUAL: DESAPARECER ---
+				// Escalamos a 0.0 para que el MultiMesh no lo dibuje.
+				// Sigue existiendo en memoria, pero es invisible.
+				t = t.Scaled(Vector3.Zero); 
+			}
+			else 
+			{
+				// ESTÁ VIVO Y CORRIENDO
+				if (vel.LengthSquared() > 0.1f) 
+					t = t.LookingAt(pos + vel, Vector3.Up);
 			}
 
-			// --- ACTUALIZACIÓN VISUAL (Tu código existente) ---
-			Transform3D t = Transform3D.Identity;
-			t.Origin = pos;
-			if (!isDead && vel.LengthSquared() > 0.1f) 
-			{
-				t = t.LookingAt(pos + vel, Vector3.Up); 
-			}
 			_visualizer.Multimesh.SetInstanceTransform(i, t);
 			_visualizer.Multimesh.SetInstanceColor(i, new Color(agent.Color.X, agent.Color.Y, agent.Color.Z));
 		}
