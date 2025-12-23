@@ -34,6 +34,8 @@ public partial class AgentSimulation : Node3D
 	private float _cellSize = 2.0f; // Tamaño de celda
 	private int _gridDim;           // Celdas por lado
 
+	private Label _statsLabel; // Referencia al texto en pantalla
+
 	public override void _Ready()
 	{
 		if (ComputeShaderFile == null || AgentMesh == null) return;
@@ -45,6 +47,27 @@ public partial class AgentSimulation : Node3D
 		SetupCompute();
 		SetupVisuals();
 		SetupMarkers();
+
+		SetupUI();
+	}
+
+	private void SetupUI()
+	{
+		// CanvasLayer asegura que el texto flote sobre el juego 3D
+		var canvas = new CanvasLayer();
+		AddChild(canvas);
+
+		_statsLabel = new Label();
+		_statsLabel.Position = new Vector2(20, 20);
+		_statsLabel.Modulate = Colors.White;
+		// Configuración para que se vea bien con fondo oscuro
+		var settings = new LabelSettings();
+		settings.FontSize = 24;
+		settings.OutlineSize = 4;
+		settings.OutlineColor = Colors.Black;
+		_statsLabel.LabelSettings = settings;
+		
+		canvas.AddChild(_statsLabel);
 	}
 
 	private void SetupMarkers()
@@ -190,30 +213,82 @@ public partial class AgentSimulation : Node3D
 		byte[] outputBytes = _rd.BufferGetData(_agentBufferRid);
 		_cpuAgents = ByteArrayToStructure<AgentData>(outputBytes, AgentCount);
 
+		// --- VARIABLES PARA ESTADÍSTICAS ---
+		int arrivedA = 0;
+		int arrivedB = 0;
+		int deadCount = 0;
+		
+		// Definimos el umbral de llegada (Radio del objetivo)
+		float arrivalRadius = 5.0f; 
+
+		// Posiciones de objetivos (Deben coincidir con SetupData)
+		Vector3 targetPosA = new Vector3(50, 0, _mapDepth / 2.0f);
+		Vector3 targetPosB = new Vector3(0, 0, _mapDepth / 2.0f);
+
+
 		// 4. Actualizar Visualización
 		for (int i = 0; i < AgentCount; i++)
 		{
 			var agent = _cpuAgents[i];
-			
-			Transform3D t = Transform3D.Identity;
+		
+			// Datos crudos
 			Vector3 pos = new Vector3(agent.Position.X, agent.Position.Y, agent.Position.Z);
 			Vector3 vel = new Vector3(agent.Velocity.X, agent.Velocity.Y, agent.Velocity.Z);
-
-			// 1. Asignar posición
-			t.Origin = pos;
-
-			// 2. Asignar rotación (LookAt)
-			// Solo rotamos si hay movimiento significativo para evitar errores matemáticos con vector cero
-			if (vel.LengthSquared() > 0.1f) 
+			bool isDead = agent.Color.W < 0.1f;
+			
+			// --- LÓGICA DE CONTEO ---
+			if (isDead)
 			{
-				// Mirar hacia: Posición Actual + Dirección de Velocidad
-				// Vector3.Up es el vector "arriba" del mundo
+				deadCount++;
+				// Visualización: No rotamos cadáveres, los dejamos tirados
+			}
+			else
+			{
+				// Chequear si llegaron al objetivo
+				bool isTeamA = i < (AgentCount / 2);
+				Vector3 myTarget = isTeamA ? targetPosA : targetPosB;
+				
+				// Distancia al cuadrado es más rápida (evita raíz cuadrada)
+				if (pos.DistanceSquaredTo(myTarget) < (arrivalRadius * arrivalRadius))
+				{
+					if (isTeamA) arrivedA++;
+					else arrivedB++;
+				}
+			}
+
+			// --- ACTUALIZACIÓN VISUAL (Tu código existente) ---
+			Transform3D t = Transform3D.Identity;
+			t.Origin = pos;
+			if (!isDead && vel.LengthSquared() > 0.1f) 
+			{
 				t = t.LookingAt(pos + vel, Vector3.Up); 
 			}
-			
 			_visualizer.Multimesh.SetInstanceTransform(i, t);
 			_visualizer.Multimesh.SetInstanceColor(i, new Color(agent.Color.X, agent.Color.Y, agent.Color.Z));
 		}
+
+		// --- ACTUALIZAR UI ---
+		UpdateStatsLabel(arrivedA, arrivedB, deadCount);
+	}
+
+	// Método helper para formatear el texto
+	private void UpdateStatsLabel(int arrivedA, int arrivedB, int dead)
+	{
+		int totalAlive = AgentCount - dead;
+		double fps = Engine.GetFramesPerSecond();
+		
+		_statsLabel.Text = $"""
+			FPS: {fps:F0}
+			----------------
+			Agentes Totales: {AgentCount}
+			Muertos (Aplastados): {dead}
+			Vivos: {totalAlive}
+			----------------
+			Llegadas Equipo A (Azul): {arrivedA}
+			Llegadas Equipo B (Rojo): {arrivedB}
+			----------------
+			Tasa de Éxito: {(double)(arrivedA + arrivedB) / AgentCount * 100:F1}%
+			""";
 	}
 
 	private void DispatchPhase(uint phase, float delta, int threadCount)
