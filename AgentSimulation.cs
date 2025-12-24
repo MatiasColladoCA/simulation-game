@@ -58,15 +58,31 @@ public partial class AgentSimulation : Node3D
 		AddChild(canvas);
 
 		_statsLabel = new Label();
-		_statsLabel.Position = new Vector2(20, 20);
+		_statsLabel.Position = new Vector2(10, 10);
 		_statsLabel.Modulate = Colors.White;
+
 		// Configuración para que se vea bien con fondo oscuro
 		var settings = new LabelSettings();
-		settings.FontSize = 24;
-		settings.OutlineSize = 4;
-		settings.OutlineColor = Colors.Black;
-		_statsLabel.LabelSettings = settings;
 		
+		// 1. Configuración "Pixel Art" por código
+		var sysFont = new SystemFont();
+		sysFont.FontNames = new string[] { "Monospace", "Consolas", "Courier New" };
+		sysFont.Antialiasing = TextServer.FontAntialiasing.None; // Clave: Bordes duros, sin suavizado
+		sysFont.SubpixelPositioning = TextServer.SubpixelPositioning.Disabled;
+		
+		settings.Font = sysFont;
+		settings.FontSize = 12; // Tamaño reducido (antes 24)
+		
+		// 2. Estilo visual limpio (sombra dura en vez de borde grueso)
+		settings.OutlineSize = 0; 
+		settings.ShadowSize = 1;
+		settings.ShadowColor = Colors.Black;
+		settings.ShadowOffset = new Vector2(1, 1);
+		
+		// Espaciado de línea más compacto
+		settings.LineSpacing = -2;
+
+		_statsLabel.LabelSettings = settings;
 		canvas.AddChild(_statsLabel);
 	}
 

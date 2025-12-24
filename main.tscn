@@ -1,4 +1,4 @@
-[gd_scene load_steps=5 format=3 uid="uid://bfm3yj7yc5wm7"]
+[gd_scene load_steps=6 format=3 uid="uid://bfm3yj7yc5wm7"]
 
 [ext_resource type="Script" uid="uid://4oqhmfcfpnk2" path="res://AgentSimulation.cs" id="1_ig7tw"]
 [ext_resource type="RDShaderFile" uid="uid://bbculi8jj5vwe" path="res://simulation.glsl" id="2_0xm2m"]
@@ -9,6 +9,10 @@ vertex_color_use_as_albedo = true
 [sub_resource type="SphereMesh" id="SphereMesh_h2yge"]
 material = SubResource("StandardMaterial3D_0xm2m")
 
+[sub_resource type="CapsuleMesh" id="CapsuleMesh_0xm2m"]
+radius = 4.801
+height = 31.108
+
 [node name="Node3D" type="Node3D"]
 
 [node name="Node3D" type="Node3D" parent="."]
@@ -16,8 +20,30 @@ script = ExtResource("1_ig7tw")
 ComputeShaderFile = ExtResource("2_0xm2m")
 AgentMesh = SubResource("SphereMesh_h2yge")
 
-[node name="Camera3D" type="Camera3D" parent="."]
-transform = Transform3D(1, 0, 0, 0, 0.7071068, 0.7071068, 0, -0.7071068, 0.7071068, 25, 50, 90)
-
 [node name="DirectionalLight3D" type="DirectionalLight3D" parent="."]
 transform = Transform3D(1, 0, 0, 0, 0.7071068, 0.7071068, 0, -0.7071068, 0.7071068, 25, 30, 40)
+
+[node name="MeshInstance3D" type="MeshInstance3D" parent="."]
+transform = Transform3D(0.9703188, -0.1363806, 0.1997041, 0.15461086, 0.9848391, -0.07866084, -0.18594857, 0.10720252, 0.97669375, 0, 0, 0)
+mesh = SubResource("CapsuleMesh_0xm2m")
+
+[node name="SubViewportContainer" type="SubViewportContainer" parent="."]
+texture_filter = 1
+anchors_preset = 15
+anchor_right = 1.0
+anchor_bottom = 1.0
+offset_left = 1.0
+offset_top = 5.0
+offset_right = -3.0
+grow_horizontal = 2
+grow_vertical = 2
+stretch = true
+stretch_shrink = 3
+
+[node name="SubViewport" type="SubViewport" parent="SubViewportContainer"]
+handle_input_locally = false
+size = Vector2i(382, 214)
+render_target_update_mode = 4
+
+[node name="Camera3D" type="Camera3D" parent="SubViewportContainer/SubViewport"]
+transform = Transform3D(1, 0, 0, 0, 0.7071068, 0.7071068, 0, -0.7071068, 0.7071068, 25, 50, 90)

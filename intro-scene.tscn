@@ -1,0 +1,193 @@
+[gd_scene load_steps=16 format=3 uid="uid://dw7wj20rgpire"]
+
+[ext_resource type="Script" uid="uid://elr51dutqnm3" path="res://scripts/scene-intro.gd" id="1_13bg6"]
+[ext_resource type="PackedScene" uid="uid://7ja4gmy0eule" path="res://scenes/main.tscn" id="2_v7nob"]
+[ext_resource type="Environment" uid="uid://jev67qvhhhc0" path="res://resources/shaders/env.tres" id="4_5w2lv"]
+[ext_resource type="PackedScene" uid="uid://bmy1mygo0wfl2" path="res://textures/ad astra previofinal.glb" id="7_joys8"]
+[ext_resource type="PackedScene" uid="uid://30wvfd2i0hk1" path="res://scenes/ultimate-planet-generator.tscn" id="8_q0iuk"]
+
+[sub_resource type="StandardMaterial3D" id="StandardMaterial3D_42qvh"]
+emission_enabled = true
+emission = Color(1, 1, 1, 1)
+emission_energy_multiplier = 50.0
+
+[sub_resource type="SphereMesh" id="SphereMesh_hvpt3"]
+material = SubResource("StandardMaterial3D_42qvh")
+radius = 50.0
+height = 100.0
+
+[sub_resource type="Animation" id="Animation_p8jdg"]
+length = 0.001
+step = 0.0
+tracks/0/type = "value"
+tracks/0/imported = false
+tracks/0/enabled = true
+tracks/0/path = NodePath("SubViewportContainer/SubViewport/Camera3D:position")
+tracks/0/interp = 1
+tracks/0/loop_wrap = true
+tracks/0/keys = {
+"times": PackedFloat32Array(0),
+"transitions": PackedFloat32Array(1),
+"update": 0,
+"values": [Vector3(0, 110, 60)]
+}
+tracks/1/type = "value"
+tracks/1/imported = false
+tracks/1/enabled = false
+tracks/1/path = NodePath("Text/Text:rotation")
+tracks/1/interp = 1
+tracks/1/loop_wrap = true
+tracks/1/keys = {
+"times": PackedFloat32Array(0),
+"transitions": PackedFloat32Array(1),
+"update": 0,
+"values": [Vector3(0, 0, 0)]
+}
+
+[sub_resource type="Animation" id="Animation_h0ylc"]
+resource_name = "camera_closeup"
+length = 100.0
+tracks/0/type = "value"
+tracks/0/imported = false
+tracks/0/enabled = true
+tracks/0/path = NodePath("SubViewportContainer/SubViewport/Camera3D:position")
+tracks/0/interp = 2
+tracks/0/loop_wrap = true
+tracks/0/keys = {
+"times": PackedFloat32Array(0, 1, 2.53333, 4),
+"transitions": PackedFloat32Array(2, 1, 1, 0.5),
+"update": 0,
+"values": [Vector3(0, 110, 1000), Vector3(0, 110, 800), Vector3(0, 110, 200), Vector3(0, 110, 60)]
+}
+
+[sub_resource type="Animation" id="Animation_42qvh"]
+resource_name = "rotation"
+length = 180.0
+
+[sub_resource type="Animation" id="Animation_hvpt3"]
+resource_name = "text"
+length = 3.0
+tracks/0/type = "value"
+tracks/0/imported = false
+tracks/0/enabled = true
+tracks/0/path = NodePath("Text/Text:rotation")
+tracks/0/interp = 1
+tracks/0/loop_wrap = true
+tracks/0/keys = {
+"times": PackedFloat32Array(0, 1, 2, 3),
+"transitions": PackedFloat32Array(2, 2, 2, 2),
+"update": 0,
+"values": [Vector3(-0.034906585, 0, 0), Vector3(0.034906585, 0, 0), Vector3(-0.034906585, 0, 0), Vector3(0.034906585, 0, 0)]
+}
+
+[sub_resource type="AnimationLibrary" id="AnimationLibrary_us055"]
+_data = {
+&"RESET": SubResource("Animation_p8jdg"),
+&"camera_closeup": SubResource("Animation_h0ylc"),
+&"rotation": SubResource("Animation_42qvh"),
+&"text": SubResource("Animation_hvpt3")
+}
+
+[sub_resource type="PrismMesh" id="PrismMesh_42qvh"]
+size = Vector3(100, 100, 1)
+
+[sub_resource type="CameraAttributesPractical" id="CameraAttributesPractical_gpj8o"]
+exposure_multiplier = 3.0
+auto_exposure_speed = 45.22
+dof_blur_far_distance = 2000.0
+dof_blur_far_transition = 7000.0
+
+[sub_resource type="CylinderMesh" id="CylinderMesh_se71d"]
+
+[node name="Intro" type="Node3D"]
+script = ExtResource("1_13bg6")
+main_game_scene = ExtResource("2_v7nob")
+
+[node name="Planet" parent="." instance=ExtResource("8_q0iuk")]
+
+[node name="WorldEnvironment" type="WorldEnvironment" parent="."]
+environment = ExtResource("4_5w2lv")
+
+[node name="DirectionalLight3D" type="DirectionalLight3D" parent="WorldEnvironment"]
+transform = Transform3D(1, 0, 0, 0, -0.939693, 0.34202, 0, -0.34202, -0.939693, 0, 0, 0)
+light_indirect_energy = 0.0
+shadow_enabled = true
+
+[node name="MeshInstance3D" type="MeshInstance3D" parent="WorldEnvironment"]
+transform = Transform3D(1, 0, 0, 0, 1, 0, 0, 0, 1, 0, 0, -2000)
+cast_shadow = 0
+mesh = SubResource("SphereMesh_hvpt3")
+
+[node name="DirectionalLight3D2" type="DirectionalLight3D" parent="WorldEnvironment"]
+transform = Transform3D(1, 0, 0, 0, 1, 0, 0, 0, 1, 0, 2.4259076, 183.04427)
+light_energy = 0.2
+light_indirect_energy = 16.0
+light_specular = 0.0
+
+[node name="AnimCamera" type="AnimationPlayer" parent="."]
+reset_on_save = false
+libraries = {
+&"": SubResource("AnimationLibrary_us055")
+}
+
+[node name="AnimRotation" type="AnimationPlayer" parent="."]
+reset_on_save = false
+libraries = {
+&"": SubResource("AnimationLibrary_us055")
+}
+
+[node name="AnimText" type="AnimationPlayer" parent="."]
+reset_on_save = false
+libraries = {
+&"": SubResource("AnimationLibrary_us055")
+}
+
+[node name="MeshInstance3D" type="MeshInstance3D" parent="."]
+transform = Transform3D(1, 0, 0, 0, 0.999848, -0.0174524, 0, 0.0174524, 0.999848, 0, 169.32, -317.084)
+visible = false
+mesh = SubResource("PrismMesh_42qvh")
+
+[node name="CanvasLayer" type="CanvasLayer" parent="."]
+
+[node name="Button" type="Button" parent="CanvasLayer"]
+offset_left = 527.0
+offset_top = 371.0
+offset_right = 627.0
+offset_bottom = 402.0
+text = "START"
+
+[node name="SubViewportContainer" type="SubViewportContainer" parent="."]
+texture_filter = 1
+anchors_preset = 15
+anchor_right = 1.0
+anchor_bottom = 1.0
+offset_left = 1.0
+offset_top = 5.0
+offset_right = -3.0
+grow_horizontal = 2
+grow_vertical = 2
+stretch = true
+stretch_shrink = 3
+
+[node name="SubViewport" type="SubViewport" parent="SubViewportContainer"]
+handle_input_locally = false
+size = Vector2i(382, 214)
+render_target_update_mode = 4
+
+[node name="Camera3D" type="Camera3D" parent="SubViewportContainer/SubViewport"]
+transform = Transform3D(1, 0, 0, 0, 1, 0, 0, 0, 1, 0, 110, 60)
+environment = ExtResource("4_5w2lv")
+attributes = SubResource("CameraAttributesPractical_gpj8o")
+fov = 60.0
+
+[node name="MeshInstance3D2" type="MeshInstance3D" parent="."]
+transform = Transform3D(100, 0, 0, 0, -4.371139e-06, -100, 0, 100, -4.371139e-06, 0, 0, 0)
+mesh = SubResource("CylinderMesh_se71d")
+skeleton = NodePath("../Text")
+
+[node name="Text" parent="." instance=ExtResource("7_joys8")]
+transform = Transform3D(1, 0, 0, 0, -4.371139e-08, -1, 0, 1, -4.371139e-08, 0, 0, 181.97803)
+
+[connection signal="pressed" from="CanvasLayer/Button" to="." method="_on_button_pressed"]
+
+[editable path="Text"]
