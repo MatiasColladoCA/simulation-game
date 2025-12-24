@@ -82,7 +82,7 @@ public partial class AgentSimulation : Node3D
 		// Espaciado de línea más compacto
 		settings.LineSpacing = -2;
 
-		_statsLabel.LabelSettings = settings;
+	_statsLabel.LabelSettings = settings;
 		canvas.AddChild(_statsLabel);
 	}
 

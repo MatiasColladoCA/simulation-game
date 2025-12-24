@@ -1,31 +1,53 @@
-[gd_scene load_steps=6 format=3 uid="uid://bfm3yj7yc5wm7"]
+[gd_scene load_steps=13 format=3 uid="uid://bfm3yj7yc5wm7"]
 
-[ext_resource type="Script" uid="uid://4oqhmfcfpnk2" path="res://AgentSimulation.cs" id="1_ig7tw"]
-[ext_resource type="RDShaderFile" uid="uid://bbculi8jj5vwe" path="res://simulation.glsl" id="2_0xm2m"]
+[ext_resource type="Script" uid="uid://o4dlu7q8yd5k" path="res://PlanetManager.cs" id="1_0xm2m"]
+[ext_resource type="RDShaderFile" uid="uid://xnuj6qgxnse5" path="res://simulation_sphere.glsl" id="2_1bvp3"]
+[ext_resource type="RDShaderFile" uid="uid://cghlwquisj12v" path="res://planet_compute.glsl" id="2_h2yge"]
+[ext_resource type="Script" uid="uid://bkuli5elx204a" path="res://AgentSimulationSphere.cs" id="3_h2yge"]
+[ext_resource type="Script" uid="uid://7k5lvwfwfhde" path="res://OrbitalCamera.cs" id="3_lquwl"]
 
-[sub_resource type="StandardMaterial3D" id="StandardMaterial3D_0xm2m"]
-vertex_color_use_as_albedo = true
-
-[sub_resource type="SphereMesh" id="SphereMesh_h2yge"]
-material = SubResource("StandardMaterial3D_0xm2m")
+[sub_resource type="StandardMaterial3D" id="StandardMaterial3D_1bvp3"]
+albedo_color = Color(0.22352941, 0.59607846, 0.28627452, 1)
 
 [sub_resource type="CapsuleMesh" id="CapsuleMesh_0xm2m"]
 radius = 4.801
 height = 31.108
 
+[sub_resource type="ProceduralSkyMaterial" id="ProceduralSkyMaterial_1bvp3"]
+
+[sub_resource type="Sky" id="Sky_lquwl"]
+sky_material = SubResource("ProceduralSkyMaterial_1bvp3")
+
+[sub_resource type="Environment" id="Environment_7mycd"]
+background_mode = 2
+sky = SubResource("Sky_lquwl")
+ambient_light_source = 3
+ambient_light_color = Color(0.50140655, 0.5014065, 0.5014065, 1)
+
+[sub_resource type="StandardMaterial3D" id="StandardMaterial3D_lquwl"]
+vertex_color_use_as_albedo = true
+
+[sub_resource type="SphereMesh" id="SphereMesh_lquwl"]
+material = SubResource("StandardMaterial3D_lquwl")
+
 [node name="Node3D" type="Node3D"]
 
-[node name="Node3D" type="Node3D" parent="."]
-script = ExtResource("1_ig7tw")
-ComputeShaderFile = ExtResource("2_0xm2m")
-AgentMesh = SubResource("SphereMesh_h2yge")
+[node name="PlanetManager" type="Node3D" parent="."]
+script = ExtResource("1_0xm2m")
+ComputeShader = ExtResource("2_h2yge")
+PlanetMaterial = SubResource("StandardMaterial3D_1bvp3")
 
 [node name="DirectionalLight3D" type="DirectionalLight3D" parent="."]
-transform = Transform3D(1, 0, 0, 0, 0.7071068, 0.7071068, 0, -0.7071068, 0.7071068, 25, 30, 40)
+transform = Transform3D(0.70710677, -0.49999997, 0.49999997, 0, 0.70710677, 0.70710677, -0.70710677, -0.49999997, 0.49999997, 25, 30, 40)
+light_indirect_energy = 2.485
+shadow_enabled = true
 
 [node name="MeshInstance3D" type="MeshInstance3D" parent="."]
 transform = Transform3D(0.9703188, -0.1363806, 0.1997041, 0.15461086, 0.9848391, -0.07866084, -0.18594857, 0.10720252, 0.97669375, 0, 0, 0)
 mesh = SubResource("CapsuleMesh_0xm2m")
+
+[node name="WorldEnvironment" type="WorldEnvironment" parent="."]
+environment = SubResource("Environment_7mycd")
 
 [node name="SubViewportContainer" type="SubViewportContainer" parent="."]
 texture_filter = 1
@@ -46,4 +68,10 @@ size = Vector2i(382, 214)
 render_target_update_mode = 4
 
 [node name="Camera3D" type="Camera3D" parent="SubViewportContainer/SubViewport"]
-transform = Transform3D(1, 0, 0, 0, 0.7071068, 0.7071068, 0, -0.7071068, 0.7071068, 25, 50, 90)
+transform = Transform3D(0.9137583, -0.28726798, 0.28726798, 0, 0.7071068, 0.7071068, -0.40625826, -0.6461247, 0.6461247, 0, 0, 150)
+script = ExtResource("3_lquwl")
+
+[node name="AgentSimulationSphere" type="Node3D" parent="."]
+script = ExtResource("3_h2yge")
+ComputeShaderFile = ExtResource("2_1bvp3")
+AgentMesh = SubResource("SphereMesh_lquwl")
