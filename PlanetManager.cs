@@ -30,20 +30,17 @@ public partial class PlanetManager : Node3D
 		}
 	}
 
+
 	private void CreateFace(Vector3 localUp)
 	{
-		// 1. Construir vértices base (Cubo plano)
 		Vector3 axisA = new Vector3(localUp.Y, localUp.Z, localUp.X);
 		Vector3 axisB = localUp.Cross(axisA);
 		
 		Vector3[] vertices = new Vector3[Resolution * Resolution];
-		Vector3[] normals = new Vector3[Resolution * Resolution]; // Placeholder
+		Vector3[] normals = new Vector3[Resolution * Resolution]; // Array para normales
 		int[] indices = new int[(Resolution - 1) * (Resolution - 1) * 6];
 		
-		// Generar Geometría Plana y Normalizar a Esfera
 		int triIndex = 0;
-		
-		// Buffer para enviar al Compute Shader (Direcciones)
 		float[] queryData = new float[vertices.Length * 4]; 
 
 		for (int y = 0; y < Resolution; y++)
@@ -53,54 +50,54 @@ public partial class PlanetManager : Node3D
 				int i = x + y * Resolution;
 				Vector2 percent = new Vector2(x, y) / (Resolution - 1);
 				Vector3 pointOnCube = localUp + (percent.X - 0.5f) * 2 * axisA + (percent.Y - 0.5f) * 2 * axisB;
-				Vector3 pointOnSphere = pointOnCube.Normalized(); // CubeSphere Mapping
+				Vector3 pointOnSphere = pointOnCube.Normalized();
 				
-				vertices[i] = pointOnSphere; // Guardamos dirección temporalmente
+				vertices[i] = pointOnSphere;
 				
-				// Preparar datos para GPU
+				// --- SOLUCIÓN DE ILUMINACIÓN AQUÍ ---
+				// La normal de una esfera es simplemente su dirección desde el centro.
+				// Esto garantiza que la luz interactúe perfectamente con la curvatura.
+				normals[i] = pointOnSphere; 
+				// ------------------------------------
+				
 				queryData[i * 4 + 0] = pointOnSphere.X;
 				queryData[i * 4 + 1] = pointOnSphere.Y;
 				queryData[i * 4 + 2] = pointOnSphere.Z;
 				queryData[i * 4 + 3] = 0.0f;
 
-				// Indices (Triangulos)
 				if (x != Resolution - 1 && y != Resolution - 1)
 				{
-					// TRIÁNGULO 1
+					// MANTÉN TU ORDEN DE ÍNDICES CORREGIDO (EL QUE HICISTE ANTES)
 					indices[triIndex++] = i;
-					// Intercambiamos estos dos:
-					indices[triIndex++] = i + Resolution;     // Antes era: i + Resolution + 1
-					indices[triIndex++] = i + Resolution + 1; // Antes era: i + Resolution
+					indices[triIndex++] = i + Resolution;     
+					indices[triIndex++] = i + Resolution + 1; 
 
-					// TRIÁNGULO 2
 					indices[triIndex++] = i;
-					// Intercambiamos estos dos:
-					indices[triIndex++] = i + Resolution + 1; // Antes era: i + 1
-					indices[triIndex++] = i + 1;              // Antes era: i + Resolution + 1
+					indices[triIndex++] = i + Resolution + 1; 
+					indices[triIndex++] = i + 1;              
 				}
 			}
 		}
 
-		// 2. Calcular Alturas en GPU
+		// Calculamos alturas (Compute Shader)
 		float[] heights = ComputeHeights(queryData);
 
-		// 3. Aplicar Alturas
 		for (int i = 0; i < vertices.Length; i++)
 		{
-			// Posición final = Dirección * (Radio + Altura)
+			// Aplicamos altura
 			vertices[i] = vertices[i] * (Radius + heights[i]);
 		}
 
-		// 4. Recalcular Normales (básico para iluminación)
-		// En producción se hace en Geometry Shader o Compute Shader
-		RecalculateNormals(vertices, indices, ref normals);
+		// --- BORRA O COMENTA ESTA LÍNEA ---
+		// RecalculateNormals(vertices, indices, ref normals); 
+		// -----------------------------------
 
-		// 5. Crear Mesh
+		// Crear Mesh
 		var arrMesh = new ArrayMesh();
 		var arrays = new Godot.Collections.Array();
 		arrays.Resize((int)Mesh.ArrayType.Max);
 		arrays[(int)Mesh.ArrayType.Vertex] = vertices;
-		arrays[(int)Mesh.ArrayType.Normal] = normals;
+		arrays[(int)Mesh.ArrayType.Normal] = normals; // Ahora enviamos las normales correctas
 		arrays[(int)Mesh.ArrayType.Index] = indices;
 		
 		arrMesh.AddSurfaceFromArrays(Mesh.PrimitiveType.Triangles, arrays);
@@ -109,6 +106,7 @@ public partial class PlanetManager : Node3D
 		AddChild(meshInstance);
 		_faces.Add(meshInstance);
 	}
+
 
 	private float[] ComputeHeights(float[] queries)
 	{

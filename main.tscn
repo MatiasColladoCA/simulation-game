@@ -23,6 +23,8 @@ background_mode = 2
 sky = SubResource("Sky_lquwl")
 ambient_light_source = 3
 ambient_light_color = Color(0.50140655, 0.5014065, 0.5014065, 1)
+ambient_light_energy = 3.92
+reflected_light_source = 2
 
 [sub_resource type="StandardMaterial3D" id="StandardMaterial3D_lquwl"]
 vertex_color_use_as_albedo = true
@@ -38,7 +40,7 @@ ComputeShader = ExtResource("2_h2yge")
 PlanetMaterial = SubResource("StandardMaterial3D_1bvp3")
 
 [node name="DirectionalLight3D" type="DirectionalLight3D" parent="."]
-transform = Transform3D(0.70710677, -0.49999997, 0.49999997, 0, 0.70710677, 0.70710677, -0.70710677, -0.49999997, 0.49999997, 25, 30, 40)
+transform = Transform3D(0.7071068, -0.5, 0.5, 0, 0.7071068, 0.70710677, -0.7071068, -0.5, 0.5, -324.38684, 324.88275, 40)
 light_indirect_energy = 2.485
 shadow_enabled = true
 

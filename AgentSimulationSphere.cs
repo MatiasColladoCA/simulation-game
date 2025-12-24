@@ -80,20 +80,42 @@ public partial class AgentSimulationSphere : Node3D
 		}
 	}
 
+	// Añadir variable para el buffer de la grilla
+	private Rid _gridBufferRid;
+	// Tamaño de la tabla hash (Debe ser potencia de 2 y mayor que AgentCount para evitar colisiones de hash)
+	// Para 1000-5000 agentes, 16384 (2^14) va sobrado.
+	private const int GRID_SIZE = 16384; 
+	private const int CELL_CAPACITY = 16; // Máximo de agentes por celda 3D
+
 	private void SetupCompute()
 	{
+		if (ComputeShaderFile == null) { GD.PrintErr("Falta Shader"); return; }
 		_rd = RenderingServer.CreateLocalRenderingDevice();
+
 		var shaderSpirv = ComputeShaderFile.GetSpirV();
 		_shaderRid = _rd.ShaderCreateFromSpirV(shaderSpirv);
 		_pipelineRid = _rd.ComputePipelineCreate(_shaderRid);
 
+		// 1. Buffer Agentes (Igual que antes)
 		int bytes = Marshal.SizeOf<AgentDataSphere>() * AgentCount;
 		byte[] initData = StructureToByteArray(_cpuAgents);
 		_bufferRid = _rd.StorageBufferCreate((uint)bytes, initData);
 
-		var uniform = new RDUniform { UniformType = RenderingDevice.UniformType.StorageBuffer, Binding = 0 };
-		uniform.AddId(_bufferRid);
-		_uniformSetRid = _rd.UniformSetCreate(new Godot.Collections.Array<RDUniform> { uniform }, _shaderRid, 0);
+		// 2. Buffer Grilla 3D (NUEVO)
+		// Estructura: [Contador, ID_1, ID_2 ... ID_N] por celda
+		int stride = 1 + CELL_CAPACITY; // 1 uint count + N uints ids
+		int gridBytes = GRID_SIZE * stride * 4; // 4 bytes por uint
+		byte[] gridData = new byte[gridBytes]; // Inicia en 0
+		_gridBufferRid = _rd.StorageBufferCreate((uint)gridBytes, gridData);
+
+		// 3. Uniform Set (Binding 0: Agentes, Binding 1: Grilla)
+		var uAgent = new RDUniform { UniformType = RenderingDevice.UniformType.StorageBuffer, Binding = 0 };
+		uAgent.AddId(_bufferRid);
+		
+		var uGrid = new RDUniform { UniformType = RenderingDevice.UniformType.StorageBuffer, Binding = 1 };
+		uGrid.AddId(_gridBufferRid);
+
+		_uniformSetRid = _rd.UniformSetCreate(new Godot.Collections.Array<RDUniform> { uAgent, uGrid }, _shaderRid, 0);
 	}
 
 	private void SetupVisuals()
@@ -111,42 +133,39 @@ public partial class AgentSimulationSphere : Node3D
 		AddChild(_visualizer);
 	}
 
+
 	public override void _Process(double delta)
 	{
-		// GUARD CLAUSE CRÍTICO:
-		// Si el pipeline no se creó correctamente (por error de shader),
-		// no intentamos dibujar ni despachar, evitando el spam de errores.
+		// 1. Guard Clause
 		if (_rd == null || !_pipelineRid.IsValid || !_uniformSetRid.IsValid) return;
 
-		// Push Constants Esféricos (32 bytes alineados)
-		var stream = new System.IO.MemoryStream();
-		var writer = new System.IO.BinaryWriter(stream);
-		writer.Write((float)delta);
-		writer.Write((float)Time.GetTicksMsec() / 1000.0f);
-		writer.Write((float)PlanetRadius);
-		writer.Write((float)NoiseScale);
-		writer.Write((float)NoiseHeight);
-		writer.Write((uint)AgentCount);
-		writer.Write((float)0.0f); // Padding
-		writer.Write((float)0.0f); // Padding
+		// --- ORQUESTACIÓN DEL COMPUTE SHADER (3 FASES) ---
 
-		var pushBytes = stream.ToArray();
+		// FASE 0: CLEAR (Limpiar la grilla)
+		// Ejecutamos tantos hilos como celdas hay en la grilla
+		DispatchPhase(0, (float)delta, GRID_SIZE);
 		
-		var computeList = _rd.ComputeListBegin();
-		_rd.ComputeListBindComputePipeline(computeList, _pipelineRid);
-		_rd.ComputeListBindUniformSet(computeList, _uniformSetRid, 0);
-		_rd.ComputeListSetPushConstant(computeList, pushBytes, (uint)pushBytes.Length);
+		// Barrera: Esperar a que la limpieza termine antes de escribir
+		_rd.Barrier(RenderingDevice.BarrierMask.Compute);
+
+		// FASE 1: POPULATE (Llenar la grilla)
+		// Ejecutamos tantos hilos como agentes
+		DispatchPhase(1, (float)delta, AgentCount);
 		
-		uint groups = (uint)Mathf.CeilToInt(AgentCount / 64.0f);
-		_rd.ComputeListDispatch(computeList, groups, 1, 1);
-		_rd.ComputeListEnd();
+		// Barrera: Esperar a que todos se registren antes de leer colisiones
+		_rd.Barrier(RenderingDevice.BarrierMask.Compute);
+
+		// FASE 2: UPDATE (Física y Colisiones)
+		DispatchPhase(2, (float)delta, AgentCount);
+
+		// --- DESCARGA DE DATOS ---
 		_rd.Submit();
 		_rd.Sync();
 
 		byte[] outputBytes = _rd.BufferGetData(_bufferRid);
 		_cpuAgents = ByteArrayToStructure<AgentDataSphere>(outputBytes, AgentCount);
 
-		// Stats Logic
+		// --- VISUALIZACIÓN Y STATS (Tu lógica original intacta) ---
 		int arrivedA = 0, arrivedB = 0, dead = 0;
 
 		for (int i = 0; i < AgentCount; i++)
@@ -155,33 +174,25 @@ public partial class AgentSimulationSphere : Node3D
 			float status = agent.Color.W;
 			Vector3 pos = new Vector3(agent.Position.X, agent.Position.Y, agent.Position.Z);
 			
-			// Visualización
 			Transform3D t = Transform3D.Identity;
 			t.Origin = pos;
 
 			if (status < 0.5f) // Muerto
 			{
 				dead++;
-				// t = t.Scaled(Vector3.Zero); // Opcional: Ocultar muertos
 			}
 			else if (status > 1.5f) // Salvado
 			{
 				if (i < AgentCount/2) arrivedA++; else arrivedB++;
-				t = t.Scaled(Vector3.Zero); // Pop!
+				t = t.Scaled(Vector3.Zero); 
 			}
 			else // Vivo
 			{
-				// ALINEACIÓN ESFÉRICA
-				// 1. Arriba = Normal de la esfera en ese punto
 				Vector3 up = pos.Normalized();
-				
-				// 2. Mirar hacia adelante (Velocidad)
 				Vector3 vel = new Vector3(agent.Velocity.X, agent.Velocity.Y, agent.Velocity.Z);
 				Vector3 forward = vel.LengthSquared() > 0.1f ? vel.Normalized() : Vector3.Forward;
 				
-				// 3. LookAt seguro
-				// "Mirar hacia donde voy, manteniendo la cabeza apuntando lejos del centro del planeta"
-				if (Mathf.Abs(up.Dot(forward)) < 0.99f) // Evitar error si miramos recto arriba
+				if (Mathf.Abs(up.Dot(forward)) < 0.99f)
 				{
 					t = t.LookingAt(pos + forward, up);
 				}
@@ -192,6 +203,36 @@ public partial class AgentSimulationSphere : Node3D
 		}
 		
 		UpdateStats(arrivedA, arrivedB, dead);
+	}
+
+	private void DispatchPhase(uint phase, float delta, int threadCount)
+	{
+		var stream = new System.IO.MemoryStream();
+		var writer = new System.IO.BinaryWriter(stream);
+		
+		// EL ORDEN DEBE COINCIDIR EXACTAMENTE CON EL STRUCT 'Params' EN GLSL
+		writer.Write((float)delta);                     // Offset 0
+		writer.Write((float)Time.GetTicksMsec() / 1000.0f); // Offset 4
+		writer.Write((float)PlanetRadius);              // Offset 8
+		writer.Write((float)NoiseScale);                // Offset 12
+		writer.Write((float)NoiseHeight);               // Offset 16
+		writer.Write((uint)AgentCount);                 // Offset 20
+		writer.Write((uint)phase);                      // Offset 24 (La Fase actual)
+		writer.Write((uint)GRID_SIZE);                  // Offset 28 (Tamaño Grilla)
+		
+		// Total: 32 bytes exactos.
+		
+		byte[] pushBytes = stream.ToArray();
+		
+		var computeList = _rd.ComputeListBegin();
+		_rd.ComputeListBindComputePipeline(computeList, _pipelineRid);
+		_rd.ComputeListBindUniformSet(computeList, _uniformSetRid, 0);
+		_rd.ComputeListSetPushConstant(computeList, pushBytes, (uint)pushBytes.Length);
+		
+		// Calculamos grupos de trabajo (Threads / 64)
+		uint groups = (uint)Mathf.CeilToInt(threadCount / 64.0f);
+		_rd.ComputeListDispatch(computeList, groups, 1, 1);
+		_rd.ComputeListEnd();
 	}
 
 
@@ -272,5 +313,19 @@ public partial class AgentSimulationSphere : Node3D
 			handle.Free(); 
 		} 
 		return data;
+	}
+
+	public override void _Notification(int what)
+	{
+		if (what == NotificationPredelete && _rd != null)
+		{
+			_rd.FreeRid(_uniformSetRid);
+			// _rd.FreeRid(_agentBufferRid);
+			if (_gridBufferRid.IsValid) _rd.FreeRid(_gridBufferRid);
+			_rd.FreeRid(_gridBufferRid); // Liberar Grid
+			_rd.FreeRid(_pipelineRid);
+			_rd.FreeRid(_shaderRid);
+			_rd.Free();
+		}
 	}
 }
