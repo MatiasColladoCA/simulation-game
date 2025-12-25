@@ -1,0 +1,10 @@
+[gd_resource type="ShaderMaterial" load_steps=2 format=3 uid="uid://dbyadi8ivthxm"]
+
+[ext_resource type="Shader" uid="uid://dx3sist5qud21" path="res://Shaders/SphereImpostor.gdshader" id="1_p37i5"]
+
+[resource]
+render_priority = 0
+shader = ExtResource("1_p37i5")
+shader_parameter/albedo = Color(1, 1, 1, 1)
+shader_parameter/metallic = 0.0
+shader_parameter/roughness = 0.5

@@ -31,7 +31,7 @@ public partial class OrbitalCamera : Camera3D
 		// 1. ROTACIÓN (Click Derecho + Arrastrar)
 		if (@event is InputEventMouseButton mb)
 		{
-			if (mb.ButtonIndex == MouseButton.Right)
+			if (mb.ButtonIndex == MouseButton.Left)
 			{
 				_isDragging = mb.Pressed;
 				Input.MouseMode = _isDragging ? Input.MouseModeEnum.Captured : Input.MouseModeEnum.Visible;
