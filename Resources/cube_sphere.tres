@@ -1,6 +1,6 @@
 [gd_resource type="ShaderMaterial" load_steps=2 format=3 uid="uid://dbyadi8ivthxm"]
 
-[ext_resource type="Shader" uid="uid://dx3sist5qud21" path="res://Shaders/SphereImpostor.gdshader" id="1_p37i5"]
+[ext_resource type="Shader" uid="uid://dx3sist5qud21" path="res://Shaders/Visual/SphereImpostor.gdshader" id="1_p37i5"]
 
 [resource]
 render_priority = 0

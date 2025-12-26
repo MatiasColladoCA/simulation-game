@@ -13,26 +13,30 @@ public struct AgentDataSphere
 
 public partial class AgentSimulationSphere : Node3D
 {
-	[Export] public int AgentCount = 20000;
+	[Export] public int AgentCount = 50000; // ¡Probemos con 50k!
 	[Export] public RDShaderFile ComputeShaderFile;
-	
-	// Se elimina 'AgentMesh' genérico, usamos QuadMesh generado en código
 	
 	// Parámetros del Planeta
 	[Export] public float PlanetRadius = 50.0f;
 	[Export] public float NoiseScale = 2.0f;
 	[Export] public float NoiseHeight = 10.0f;
 	
-	// EXPORT para asignar en editor si se desea, sino se crea solo.
 	[Export] private MultiMeshInstance3D _visualizer;
 
 	private RenderingDevice _rd;
 	private Rid _shaderRid, _pipelineRid, _bufferRid, _uniformSetRid, _gridBufferRid;
-	private AgentDataSphere[] _cpuAgents;
+	// Nuevas texturas para comunicar GPU Compute -> GPU Visual
+	private Rid _posTextureRid, _colorTextureRid; 
+	private Texture2Drd _posTextureRef, _colorTextureRef;
+
+	private AgentDataSphere[] _cpuAgents; // Solo para init
 	private Label _statsLabel;
 	
+	// Configuración de la "Hoja de Datos" (Textura)
+	private const int DATA_TEX_WIDTH = 2048; // Ancho fijo de la textura de datos
+	
 	// Constantes Grilla
-	private const int GRID_SIZE = 16384; 
+	private const int GRID_SIZE = 32768; // Aumentado para 50k
 	private const int CELL_CAPACITY = 16; 
 
 	public override void _Ready()
@@ -40,8 +44,8 @@ public partial class AgentSimulationSphere : Node3D
 		SetupUI();
 		SetupData();
 		SetupCompute();
-		SetupVisuals(); // Corrección aplicada aquí dentro
-		SetupMarkers(); // Corrección aplicada aquí dentro
+		SetupVisuals(); 
+		SetupMarkers();
 	}
 
 	private void SetupData()
@@ -79,150 +83,145 @@ public partial class AgentSimulationSphere : Node3D
 		}
 	}
 
+
 	private void SetupCompute()
-	{
-		if (ComputeShaderFile == null) { GD.PrintErr("Falta Shader"); return; }
-		_rd = RenderingServer.CreateLocalRenderingDevice();
+		{
+			if (ComputeShaderFile == null) { GD.PrintErr("Falta Shader"); return; }
+			// --- CAMBIO CRÍTICO: USAR EL DEVICE GLOBAL ---
+			// ANTES: _rd = RenderingServer.CreateLocalRenderingDevice();
+			// AHORA:
+			_rd = RenderingServer.GetRenderingDevice();
 
-		var shaderSpirv = ComputeShaderFile.GetSpirV();
-		_shaderRid = _rd.ShaderCreateFromSpirV(shaderSpirv);
-		_pipelineRid = _rd.ComputePipelineCreate(_shaderRid);
+			if (_rd == null)
+			{
+				// Esto pasa si usas el renderer Compatibility (OpenGL). Se requiere Mobile o Forward+ (Vulkan).
+				GD.PrintErr("No se pudo obtener el RenderingDevice. Asegúrate de usar Vulkan (Forward+ o Mobile).");
+				return;
+			}
 
-		int bytes = Marshal.SizeOf<AgentDataSphere>() * AgentCount;
-		byte[] initData = StructureToByteArray(_cpuAgents);
-		_bufferRid = _rd.StorageBufferCreate((uint)bytes, initData);
+			var shaderSpirv = ComputeShaderFile.GetSpirV();
+			_shaderRid = _rd.ShaderCreateFromSpirV(shaderSpirv);
+			_pipelineRid = _rd.ComputePipelineCreate(_shaderRid);
 
-		int stride = 1 + CELL_CAPACITY; 
-		int gridBytes = GRID_SIZE * stride * 4; 
-		byte[] gridData = new byte[gridBytes]; 
-		_gridBufferRid = _rd.StorageBufferCreate((uint)gridBytes, gridData);
+			// 1. Buffers (SSBO)
+			int bytes = Marshal.SizeOf<AgentDataSphere>() * AgentCount;
+			byte[] initData = StructureToByteArray(_cpuAgents);
+			_bufferRid = _rd.StorageBufferCreate((uint)bytes, initData);
 
-		var uAgent = new RDUniform { UniformType = RenderingDevice.UniformType.StorageBuffer, Binding = 0 };
-		uAgent.AddId(_bufferRid);
-		
-		var uGrid = new RDUniform { UniformType = RenderingDevice.UniformType.StorageBuffer, Binding = 1 };
-		uGrid.AddId(_gridBufferRid);
+			int stride = 1 + CELL_CAPACITY; 
+			int gridBytes = GRID_SIZE * stride * 4; 
+			byte[] gridData = new byte[gridBytes]; 
+			_gridBufferRid = _rd.StorageBufferCreate((uint)gridBytes, gridData);
 
-		_uniformSetRid = _rd.UniformSetCreate(new Godot.Collections.Array<RDUniform> { uAgent, uGrid }, _shaderRid, 0);
-	}
+			// 2. Texturas de Salida (Output Images)
+			int texHeight = Mathf.CeilToInt((float)AgentCount / DATA_TEX_WIDTH);
+			
+			var fmt = new RDTextureFormat();
+			fmt.Width = (uint)DATA_TEX_WIDTH;
+			fmt.Height = (uint)texHeight;
+			fmt.Depth = 1;
+			fmt.Format = RenderingDevice.DataFormat.R32G32B32A32Sfloat;
+			// Importante: UsageBits debe permitir Sampling (lectura visual) y Storage (escritura compute)
+			fmt.UsageBits = RenderingDevice.TextureUsageBits.StorageBit | 
+							RenderingDevice.TextureUsageBits.SamplingBit | 
+							RenderingDevice.TextureUsageBits.CanUpdateBit |
+							RenderingDevice.TextureUsageBits.CanCopyFromBit;
+
+			// --- CORRECCIÓN AQUÍ ---
+			// Necesitamos un RDTextureView por defecto para crear la textura
+			var view = new RDTextureView();
+			
+			// Pasamos 'view' como segundo argumento. El tercer argumento (datos) es opcional/vacío
+			_posTextureRid = _rd.TextureCreate(fmt, view, new Godot.Collections.Array<byte[]>());
+			_colorTextureRid = _rd.TextureCreate(fmt, view, new Godot.Collections.Array<byte[]>());
+
+			// Crear wrappers Texture2DRD (Solo funciona en Godot 4.2+)
+			_posTextureRef = new Texture2Drd { TextureRdRid = _posTextureRid };
+			_colorTextureRef = new Texture2Drd { TextureRdRid = _colorTextureRid };
+
+			// 3. Uniform Set
+			var uAgent = new RDUniform { UniformType = RenderingDevice.UniformType.StorageBuffer, Binding = 0 };
+			uAgent.AddId(_bufferRid);
+			
+			var uGrid = new RDUniform { UniformType = RenderingDevice.UniformType.StorageBuffer, Binding = 1 };
+			uGrid.AddId(_gridBufferRid);
+
+			var uPosTex = new RDUniform { UniformType = RenderingDevice.UniformType.Image, Binding = 2 };
+			uPosTex.AddId(_posTextureRid);
+
+			var uColTex = new RDUniform { UniformType = RenderingDevice.UniformType.Image, Binding = 3 };
+			uColTex.AddId(_colorTextureRid);
+
+			// Asegurarse de incluir los 4 uniforms en la lista
+			_uniformSetRid = _rd.UniformSetCreate(new Godot.Collections.Array<RDUniform> { uAgent, uGrid, uPosTex, uColTex }, _shaderRid, 0);
+		}
+
+
+
 
 	private void SetupVisuals()
 	{
-		// 1. Vincular el nodo (Si no lo asignaste en el inspector, lo busca o crea)
 		if (_visualizer == null)
 		{
-			// Intenta buscarlo por nombre primero
 			_visualizer = GetNodeOrNull<MultiMeshInstance3D>("AgentVisualizer");
-			
 			if (_visualizer == null)
 			{
 				_visualizer = new MultiMeshInstance3D();
 				_visualizer.Name = "AgentVisualizer";
 				AddChild(_visualizer);
-				GD.Print("Aviso: _visualizer creado por código.");
 			}
 		}
 
-		// 2. Reiniciar Multimesh (CRÍTICO para evitar bloqueos)
-		_visualizer.Multimesh = new MultiMesh(); // Crear uno nuevo siempre asegura limpieza
+		_visualizer.Multimesh = new MultiMesh();
 		_visualizer.Multimesh.TransformFormat = MultiMesh.TransformFormatEnum.Transform3D;
-		_visualizer.Multimesh.UseColors = true; 
-		_visualizer.Multimesh.InstanceCount = AgentCount; // Asignar count AHORA para reservar memoria
+		_visualizer.Multimesh.UseColors = false; // YA NO USAMOS COLORES DE INSTANCIA, LEEMOS TEXTURA
+		_visualizer.Multimesh.InstanceCount = AgentCount;
 
-		// 3. Configurar Mesh y Material
 		var quadMesh = new QuadMesh();
-		quadMesh.Size = new Vector2(0.5f, 0.5f); // Tamaño del agente
+		quadMesh.Size = new Vector2(0.5f, 0.5f);
 
-		// Cargar Shader
-		string shaderPath = "res://Shaders/SphereImpostor.gdshader";
+		string shaderPath = "res://Shaders/Visual/SphereImpostor.gdshader"; // RUTA ACTUALIZADA
 		var shader = GD.Load<Shader>(shaderPath);
 
 		if (shader == null)
 		{
-			GD.PrintErr($"CRÍTICO: No se pudo cargar el shader en {shaderPath}. Verifica la ruta.");
-			// Material de error (Rojo brillante) para debug
-			var errMat = new StandardMaterial3D();
-			errMat.AlbedoColor = Colors.Red; 
-			errMat.ShadingMode = BaseMaterial3D.ShadingModeEnum.Unshaded;
-			quadMesh.Material = errMat;
-		}
-		else
-		{
-			var material = new ShaderMaterial();
-			material.Shader = shader;
-			quadMesh.Material = material;
+			GD.PrintErr($"CRÍTICO: No shader en {shaderPath}");
+			return;
 		}
 
-		_visualizer.Multimesh.Mesh = quadMesh;
+		var material = new ShaderMaterial();
+		material.Shader = shader;
 		
-		// AABB Manual (Evita que desaparezcan al mover la cámara)
+		// --- AQUÍ OCURRE LA MAGIA ---
+		// Pasamos las texturas de la GPU directamente al material
+		material.SetShaderParameter("agent_pos_texture", _posTextureRef);
+		material.SetShaderParameter("agent_color_texture", _colorTextureRef);
+		material.SetShaderParameter("tex_width", DATA_TEX_WIDTH);
+		material.SetShaderParameter("agent_radius_visual", 0.25f); // Mitad del quad size
+
+		quadMesh.Material = material;
+		_visualizer.Multimesh.Mesh = quadMesh;
 		_visualizer.Multimesh.CustomAabb = new Aabb(new Vector3(-1000, -1000, -1000), new Vector3(2000, 2000, 2000));
 	}
 
-
-
 	public override void _Process(double delta)
 	{
-		// 1. Guard Clause para evitar crash si init falló
-		if (_rd == null || !_pipelineRid.IsValid || !_uniformSetRid.IsValid || _visualizer == null) return;
+		if (_rd == null) return;
 
+		// Fases Compute (Igual que antes)
 		DispatchPhase(0, (float)delta, GRID_SIZE);
 		DispatchPhase(1, (float)delta, AgentCount);
-		DispatchPhase(2, (float)delta, AgentCount);
+		DispatchPhase(2, (float)delta, AgentCount); // En esta fase ahora escribimos a la textura
 
 		_rd.Submit();
-		_rd.Sync();
-
-		byte[] outputBytes = _rd.BufferGetData(_bufferRid);
-		_cpuAgents = ByteArrayToStructure<AgentDataSphere>(outputBytes, AgentCount);
-
-		// Visualización
-		int arrivedA = 0, arrivedB = 0, dead = 0;
 		
-		// Asignamos cantidad correcta antes de iterar
-		if (_visualizer.Multimesh.InstanceCount != AgentCount) 
-			_visualizer.Multimesh.InstanceCount = AgentCount;
+		_rd.Sync(); //<--- ELIMINADO. No esperamos a la GPU.
+		// BufferGetData <--- ELIMINADO. No leemos datos.
+		// Bucle for <--- ELIMINADO. No actualizamos visuales en CPU.
 		
-		// Variable para ajustar cuánto flotan (Radio visual + pequeño margen)
-		float visualOffset = 0.5f;
-
-		for (int i = 0; i < AgentCount; i++)
-		{
-			var agent = _cpuAgents[i];
-			float status = agent.Color.W;
-			
-			// Posición física original (Centro del agente)
-			Vector3 physPos = new Vector3(agent.Position.X, agent.Position.Y, agent.Position.Z);
-			
-			// Calculamos el vector "Arriba" (Normal de la superficie)
-			Vector3 up = physPos.Normalized();
-			
-			// --- CORRECCIÓN ---
-			// Elevamos la posición visual sumando el radio en dirección de la normal
-			Vector3 visualPos = physPos + (up * visualOffset);
-
-			Transform3D t = Transform3D.Identity;
-			t.Origin = visualPos; // Usamos la nueva posición corregida
-
-			if (status < 0.5f) dead++;
-
-			else if (status > 1.5f)
-			{
-				if (i < AgentCount/2) arrivedA++; else arrivedB++;
-				t = t.Scaled(Vector3.Zero); 
-			}
-			else
-			{
-				// Billboard: Solo necesitamos posición y escala, el shader hace el billboard.
-				// Pero mantenemos lógica de 'up' si quisieras orientación real.
-				// Para impostores esféricos, la rotación no importa, solo la posición.
-			}
-
-			_visualizer.Multimesh.SetInstanceTransform(i, t);
-			_visualizer.Multimesh.SetInstanceColor(i, new Color(agent.Color.X, agent.Color.Y, agent.Color.Z));
-		}
-		
-		UpdateStats(arrivedA, arrivedB, dead);
+		// Actualizar UI (Usamos valores ficticios o calculados en GPU más adelante)
+		// Por ahora, solo mostramos FPS para ver el rendimiento puro
+		_statsLabel.Text = $"AGENTS: {AgentCount}\nFPS: {Engine.GetFramesPerSecond()}";
 	}
 
 	private void DispatchPhase(uint phase, float delta, int threadCount)
@@ -238,7 +237,14 @@ public partial class AgentSimulationSphere : Node3D
 		writer.Write((uint)AgentCount);
 		writer.Write((uint)phase);
 		writer.Write((uint)GRID_SIZE);
+		writer.Write((uint)DATA_TEX_WIDTH);             // Offset 32 (Termina en 36)
 		
+		// --- CORRECCIÓN: PADDING (Relleno) ---
+		// El error pide 48 bytes. Tenemos 36. Faltan 12 bytes.
+		// Escribimos 3 ceros (uint/float = 4 bytes c/u) extra.
+		writer.Write((uint)0); // Padding 1 (+4 = 40)
+		writer.Write((uint)0); // Padding 2 (+4 = 44)
+		writer.Write((uint)0); // Padding 3 (+4 = 48) -> ¡BINGO!		
 		byte[] pushBytes = stream.ToArray();
 		
 		var computeList = _rd.ComputeListBegin();
@@ -262,64 +268,28 @@ public partial class AgentSimulationSphere : Node3D
 		var meshInstance = new MeshInstance3D();
 		var boxMesh = new BoxMesh();
 		boxMesh.Size = new Vector3(2, 10, 2); 
-		
 		var mat = new StandardMaterial3D();
 		mat.AlbedoColor = color;
-		mat.EmissionEnabled = true;
-		mat.Emission = color;
-		mat.EmissionEnergyMultiplier = 2.0f;
-		
+		mat.EmissionEnabled = true; mat.Emission = color; mat.EmissionEnergyMultiplier = 2.0f;
 		boxMesh.Material = mat;
 		meshInstance.Mesh = boxMesh;
 		meshInstance.Name = name;
-
 		AddChild(meshInstance);
-
-		meshInstance.Position = pos;
-		if (pos.LengthSquared() > 0.1f)
-		{
-			meshInstance.LookAt(pos * 2.0f, Vector3.Right); 
-		}
-
+		meshInstance.GlobalPosition = pos; // GlobalPosition es más seguro
+		if (pos.LengthSquared() > 0.1f) meshInstance.LookAt(pos * 2.0f, Vector3.Right); 
 	}
 
 	private void SetupUI() {
 		var canvas = new CanvasLayer(); AddChild(canvas);
 		_statsLabel = new Label(); _statsLabel.Position = new Vector2(10, 10);
 		var settings = new LabelSettings();
-		var sysFont = new SystemFont(); sysFont.FontNames = new[] { "Monospace" };
-		settings.Font = sysFont; settings.FontSize = 12; settings.ShadowSize = 1; settings.ShadowColor = Colors.Black;
+		settings.FontSize = 24; settings.OutlineSize = 4; settings.OutlineColor = Colors.Black; // Mejor visibilidad
 		_statsLabel.LabelSettings = settings; canvas.AddChild(_statsLabel);
-	}
-	
-	private void UpdateStats(int a, int b, int d) {
-		_statsLabel.Text = $"AGENTS: {AgentCount}\nDEAD: {d}\nA_ARRIVED: {a}\nB_ARRIVED: {b}";
 	}
 
 	private byte[] StructureToByteArray(AgentDataSphere[] data) {
 		int size = Marshal.SizeOf<AgentDataSphere>(); byte[] arr = new byte[size * data.Length];
 		GCHandle handle = GCHandle.Alloc(data, GCHandleType.Pinned);
 		try { Marshal.Copy(handle.AddrOfPinnedObject(), arr, 0, arr.Length); } finally { handle.Free(); } return arr;
-	}
-
-	private T[] ByteArrayToStructure<T>(byte[] bytes, int count) where T : struct 
-	{
-		T[] data = new T[count]; 
-		int size = Marshal.SizeOf<T>();
-		GCHandle handle = GCHandle.Alloc(data, GCHandleType.Pinned);
-		try { Marshal.Copy(bytes, 0, handle.AddrOfPinnedObject(), bytes.Length); } finally { handle.Free(); } return data;
-	}
-
-	public override void _Notification(int what)
-	{
-		if (what == NotificationPredelete && _rd != null)
-		{
-			if (_uniformSetRid.IsValid) _rd.FreeRid(_uniformSetRid);
-			if (_bufferRid.IsValid) _rd.FreeRid(_bufferRid);
-			if (_gridBufferRid.IsValid) _rd.FreeRid(_gridBufferRid);
-			if (_pipelineRid.IsValid) _rd.FreeRid(_pipelineRid);
-			if (_shaderRid.IsValid) _rd.FreeRid(_shaderRid);
-			_rd.Free();
-		}
 	}
 }
