@@ -13,7 +13,7 @@ public struct AgentDataSphere
 
 public partial class AgentSimulationSphere : Node3D
 {
-	[Export] public int AgentCount = 50000; // ¡Probemos con 50k!
+	[Export] public int AgentCount = 200000; // ¡Probemos con 50k!
 	[Export] public RDShaderFile ComputeShaderFile;
 	
 	// Parámetros del Planeta
@@ -23,11 +23,21 @@ public partial class AgentSimulationSphere : Node3D
 	
 	[Export] private MultiMeshInstance3D _visualizer;
 
+	// [Export] public Cubemap HeightMapCubemap;
+
+	[Export] public RDShaderFile BakerShaderFile;
+	// Variable para guardar el RID del Cubemap generado
+	private const int CUBEMAP_SIZE = 1024; // Resolución por cara (1024x1024)
+
 	private RenderingDevice _rd;
 	private Rid _shaderRid, _pipelineRid, _bufferRid, _uniformSetRid, _gridBufferRid;
 	// Nuevas texturas para comunicar GPU Compute -> GPU Visual
 	private Rid _posTextureRid, _colorTextureRid; 
 	private Texture2Drd _posTextureRef, _colorTextureRef;
+
+	// --- VARIABLES DEL CUBEMAP ---
+	private Rid _samplerRid; 
+	private Rid _bakedCubemapRid; // <--- ESTA FALTABA EN TU CONTEXTO
 
 	private AgentDataSphere[] _cpuAgents; // Solo para init
 	private Label _statsLabel;
@@ -86,24 +96,25 @@ public partial class AgentSimulationSphere : Node3D
 
 	private void SetupCompute()
 		{
-			if (ComputeShaderFile == null) { GD.PrintErr("Falta Shader"); return; }
-			// --- CAMBIO CRÍTICO: USAR EL DEVICE GLOBAL ---
-			// ANTES: _rd = RenderingServer.CreateLocalRenderingDevice();
-			// AHORA:
+			// 1. Validaciones e Inicialización Global
+			if (ComputeShaderFile == null || BakerShaderFile == null) { GD.PrintErr("Faltan Shaders"); return; }
+			
 			_rd = RenderingServer.GetRenderingDevice();
-
 			if (_rd == null)
 			{
-				// Esto pasa si usas el renderer Compatibility (OpenGL). Se requiere Mobile o Forward+ (Vulkan).
-				GD.PrintErr("No se pudo obtener el RenderingDevice. Asegúrate de usar Vulkan (Forward+ o Mobile).");
+				GD.PrintErr("Error: No se pudo obtener RenderingDevice (Usa Vulkan).");
 				return;
 			}
 
+			// 2. EJECUTAR EL BAKER (Genera _bakedCubemapRid)
+			BakeTerrain(); 
+
+			// 3. Preparar Pipeline de Simulación
 			var shaderSpirv = ComputeShaderFile.GetSpirV();
 			_shaderRid = _rd.ShaderCreateFromSpirV(shaderSpirv);
 			_pipelineRid = _rd.ComputePipelineCreate(_shaderRid);
 
-			// 1. Buffers (SSBO)
+			// 4. Crear Buffers (SSBO)
 			int bytes = Marshal.SizeOf<AgentDataSphere>() * AgentCount;
 			byte[] initData = StructureToByteArray(_cpuAgents);
 			_bufferRid = _rd.StorageBufferCreate((uint)bytes, initData);
@@ -113,33 +124,26 @@ public partial class AgentSimulationSphere : Node3D
 			byte[] gridData = new byte[gridBytes]; 
 			_gridBufferRid = _rd.StorageBufferCreate((uint)gridBytes, gridData);
 
-			// 2. Texturas de Salida (Output Images)
+			// 5. Crear Texturas de Salida (Pos/Color)
 			int texHeight = Mathf.CeilToInt((float)AgentCount / DATA_TEX_WIDTH);
-			
 			var fmt = new RDTextureFormat();
 			fmt.Width = (uint)DATA_TEX_WIDTH;
 			fmt.Height = (uint)texHeight;
 			fmt.Depth = 1;
 			fmt.Format = RenderingDevice.DataFormat.R32G32B32A32Sfloat;
-			// Importante: UsageBits debe permitir Sampling (lectura visual) y Storage (escritura compute)
 			fmt.UsageBits = RenderingDevice.TextureUsageBits.StorageBit | 
 							RenderingDevice.TextureUsageBits.SamplingBit | 
-							RenderingDevice.TextureUsageBits.CanUpdateBit |
+							RenderingDevice.TextureUsageBits.CanUpdateBit | 
 							RenderingDevice.TextureUsageBits.CanCopyFromBit;
 
-			// --- CORRECCIÓN AQUÍ ---
-			// Necesitamos un RDTextureView por defecto para crear la textura
 			var view = new RDTextureView();
-			
-			// Pasamos 'view' como segundo argumento. El tercer argumento (datos) es opcional/vacío
 			_posTextureRid = _rd.TextureCreate(fmt, view, new Godot.Collections.Array<byte[]>());
 			_colorTextureRid = _rd.TextureCreate(fmt, view, new Godot.Collections.Array<byte[]>());
 
-			// Crear wrappers Texture2DRD (Solo funciona en Godot 4.2+)
 			_posTextureRef = new Texture2Drd { TextureRdRid = _posTextureRid };
 			_colorTextureRef = new Texture2Drd { TextureRdRid = _colorTextureRid };
 
-			// 3. Uniform Set
+			// 6. Crear Uniforms
 			var uAgent = new RDUniform { UniformType = RenderingDevice.UniformType.StorageBuffer, Binding = 0 };
 			uAgent.AddId(_bufferRid);
 			
@@ -152,10 +156,83 @@ public partial class AgentSimulationSphere : Node3D
 			var uColTex = new RDUniform { UniformType = RenderingDevice.UniformType.Image, Binding = 3 };
 			uColTex.AddId(_colorTextureRid);
 
-			// Asegurarse de incluir los 4 uniforms en la lista
-			_uniformSetRid = _rd.UniformSetCreate(new Godot.Collections.Array<RDUniform> { uAgent, uGrid, uPosTex, uColTex }, _shaderRid, 0);
+			// --- BINDING 4: EL CUBEMAP GENERADO ---
+			var uHeightMap = new RDUniform { 
+				UniformType = RenderingDevice.UniformType.SamplerWithTexture, 
+				Binding = 4 
+			};
+
+			var samplerState = new RDSamplerState { 
+				MagFilter = RenderingDevice.SamplerFilter.Linear, 
+				MinFilter = RenderingDevice.SamplerFilter.Linear 
+			};
+			_samplerRid = _rd.SamplerCreate(samplerState);
+			
+			uHeightMap.AddId(_samplerRid);
+			uHeightMap.AddId(_bakedCubemapRid); // Creado en BakeTerrain()
+
+			// 7. CREAR SET FINAL (INCLUYENDO uHeightMap)
+			// Corrección: Tu código anterior olvidaba 'uHeightMap' en esta lista
+			_uniformSetRid = _rd.UniformSetCreate(new Godot.Collections.Array<RDUniform> { 
+				uAgent, uGrid, uPosTex, uColTex, uHeightMap 
+			}, _shaderRid, 0);
 		}
 
+
+	private void BakeTerrain()
+		{
+			// 1. Configurar Formato Cubemap
+			var fmt = new RDTextureFormat();
+			fmt.Width = (uint)CUBEMAP_SIZE;
+			fmt.Height = (uint)CUBEMAP_SIZE;
+			fmt.Depth = 1;
+			fmt.ArrayLayers = 6; // 6 caras
+			fmt.TextureType = RenderingDevice.TextureType.Cube;
+			fmt.Format = RenderingDevice.DataFormat.R32Sfloat;
+			fmt.UsageBits = RenderingDevice.TextureUsageBits.StorageBit | RenderingDevice.TextureUsageBits.SamplingBit | RenderingDevice.TextureUsageBits.CanCopyFromBit;
+
+			// 2. Crear Textura
+			_bakedCubemapRid = _rd.TextureCreate(fmt, new RDTextureView(), new Godot.Collections.Array<byte[]>());
+
+			// 3. Pipeline del Baker
+			var bakerSpirv = BakerShaderFile.GetSpirV();
+			var bakerShaderRid = _rd.ShaderCreateFromSpirV(bakerSpirv);
+			var bakerPipeline = _rd.ComputePipelineCreate(bakerShaderRid);
+
+			// 4. Uniforms
+			var uOutput = new RDUniform { UniformType = RenderingDevice.UniformType.Image, Binding = 0 };
+			uOutput.AddId(_bakedCubemapRid);
+			var bakerUniformSet = _rd.UniformSetCreate(new Godot.Collections.Array<RDUniform> { uOutput }, bakerShaderRid, 0);
+
+			// 5. Push Constants
+			var stream = new System.IO.MemoryStream();
+			var writer = new System.IO.BinaryWriter(stream);
+			writer.Write((float)PlanetRadius);
+			writer.Write((float)NoiseScale);
+			writer.Write((float)NoiseHeight);
+			writer.Write((uint)CUBEMAP_SIZE);
+			byte[] pushBytes = stream.ToArray();
+
+			// 6. Ejecutar
+			var computeList = _rd.ComputeListBegin();
+			_rd.ComputeListBindComputePipeline(computeList, bakerPipeline);
+			_rd.ComputeListBindUniformSet(computeList, bakerUniformSet, 0);
+			_rd.ComputeListSetPushConstant(computeList, pushBytes, (uint)pushBytes.Length);
+			
+			uint groups = (uint)Mathf.CeilToInt(CUBEMAP_SIZE / 32.0f);
+			_rd.ComputeListDispatch(computeList, groups, groups, 6); // Z=6 para las caras
+			_rd.ComputeListEnd();
+			
+			// _rd.Submit();
+			// _rd.Sync(); // Esperamos al baker
+
+			// Limpieza local
+			_rd.FreeRid(bakerPipeline);
+			_rd.FreeRid(bakerShaderRid);
+			_rd.FreeRid(bakerUniformSet);
+			
+			GD.Print("Terrain Baked en VRAM.");
+		}
 
 
 
@@ -213,9 +290,9 @@ public partial class AgentSimulationSphere : Node3D
 		DispatchPhase(1, (float)delta, AgentCount);
 		DispatchPhase(2, (float)delta, AgentCount); // En esta fase ahora escribimos a la textura
 
-		_rd.Submit();
+		// _rd.Submit();
 		
-		_rd.Sync(); //<--- ELIMINADO. No esperamos a la GPU.
+		// _rd.Sync(); //<--- ELIMINADO. No esperamos a la GPU.
 		// BufferGetData <--- ELIMINADO. No leemos datos.
 		// Bucle for <--- ELIMINADO. No actualizamos visuales en CPU.
 		

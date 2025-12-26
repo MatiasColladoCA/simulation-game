@@ -1,10 +1,11 @@
-[gd_scene load_steps=11 format=3 uid="uid://bbr5o4fhtiijr"]
+[gd_scene load_steps=12 format=3 uid="uid://bbr5o4fhtiijr"]
 
 [ext_resource type="Script" uid="uid://o4dlu7q8yd5k" path="res://Scripts/World/PlanetManager.cs" id="1_0xm2m"]
 [ext_resource type="RDShaderFile" uid="uid://xnuj6qgxnse5" path="res://Shaders/Compute/simulation_sphere.glsl" id="2_1bvp3"]
 [ext_resource type="RDShaderFile" uid="uid://cghlwquisj12v" path="res://Shaders/Compute/planet_compute.glsl" id="2_h2yge"]
 [ext_resource type="Script" uid="uid://bkuli5elx204a" path="res://Scripts/Agents/AgentSimulationSphere.cs" id="3_h2yge"]
 [ext_resource type="Script" uid="uid://7k5lvwfwfhde" path="res://Scripts/Cameras/OrbitalCamera.cs" id="3_lquwl"]
+[ext_resource type="RDShaderFile" uid="uid://c3nhofkxnuwaa" path="res://Shaders/Compute/terrain_baker.glsl" id="6_7mycd"]
 
 [sub_resource type="StandardMaterial3D" id="StandardMaterial3D_1bvp3"]
 albedo_color = Color(0.22352941, 0.59607846, 0.28627452, 1)
@@ -74,3 +75,4 @@ render_target_update_mode = 0
 script = ExtResource("3_h2yge")
 ComputeShaderFile = ExtResource("2_1bvp3")
 _visualizer = NodePath("../AgentVisualizer")
+BakerShaderFile = ExtResource("6_7mycd")

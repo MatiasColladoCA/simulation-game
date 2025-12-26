@@ -1,0 +1,14 @@
+[remap]
+
+importer="glsl"
+type="RDShaderFile"
+uid="uid://c3nhofkxnuwaa"
+path="res://.godot/imported/terrain_baker.glsl-650d30c1d6de527ee2725490f046bbd0.res"
+
+[deps]
+
+source_file="res://Shaders/Compute/terrain_baker.glsl"
+dest_files=["res://.godot/imported/terrain_baker.glsl-650d30c1d6de527ee2725490f046bbd0.res"]
+
+[params]
+
