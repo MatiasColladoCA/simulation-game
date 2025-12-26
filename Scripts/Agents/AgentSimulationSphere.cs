@@ -13,7 +13,7 @@ public struct AgentDataSphere
 
 public partial class AgentSimulationSphere : Node3D
 {
-	[Export] public int AgentCount = 50000;
+	[Export] public int AgentCount = 20000;
 	[Export] public RDShaderFile ComputeShaderFile;
 	
 	// Se elimina 'AgentMesh' genérico, usamos QuadMesh generado en código

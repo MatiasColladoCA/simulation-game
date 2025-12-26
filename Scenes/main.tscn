@@ -1,10 +1,10 @@
-[gd_scene load_steps=11 format=3 uid="uid://bbr5o4fhtiijr"]
+[gd_scene load_steps=11 format=3 uid="uid://bfm3yj7yc5wm7"]
 
-[ext_resource type="Script" uid="uid://o4dlu7q8yd5k" path="res://Scripts/World/PlanetManager.cs" id="1_0xm2m"]
-[ext_resource type="RDShaderFile" uid="uid://xnuj6qgxnse5" path="res://Shaders/Compute/simulation_sphere.glsl" id="2_1bvp3"]
-[ext_resource type="RDShaderFile" uid="uid://cghlwquisj12v" path="res://Shaders/Compute/planet_compute.glsl" id="2_h2yge"]
-[ext_resource type="Script" uid="uid://bkuli5elx204a" path="res://Scripts/Agents/AgentSimulationSphere.cs" id="3_h2yge"]
-[ext_resource type="Script" uid="uid://7k5lvwfwfhde" path="res://Scripts/Cameras/OrbitalCamera.cs" id="3_lquwl"]
+[ext_resource type="Script" uid="uid://o4dlu7q8yd5k" path="res://PlanetManager.cs" id="1_0xm2m"]
+[ext_resource type="RDShaderFile" uid="uid://xnuj6qgxnse5" path="res://simulation_sphere.glsl" id="2_1bvp3"]
+[ext_resource type="RDShaderFile" uid="uid://cghlwquisj12v" path="res://planet_compute.glsl" id="2_h2yge"]
+[ext_resource type="Script" uid="uid://bkuli5elx204a" path="res://AgentSimulationSphere.cs" id="3_h2yge"]
+[ext_resource type="Script" uid="uid://7k5lvwfwfhde" path="res://OrbitalCamera.cs" id="3_lquwl"]
 
 [sub_resource type="StandardMaterial3D" id="StandardMaterial3D_1bvp3"]
 albedo_color = Color(0.22352941, 0.59607846, 0.28627452, 1)
