@@ -13,11 +13,11 @@ public struct AgentDataSphere
 
 public partial class AgentSimulationSphere : Node3D
 {
-	[Export] public int AgentCount = 200000; // ¡Probemos con 50k!
+	[Export] public int AgentCount = 10000; // ¡Probemos con 50k!
 	[Export] public RDShaderFile ComputeShaderFile;
 	
 	// Parámetros del Planeta
-	[Export] public float PlanetRadius = 50.0f;
+	[Export] public float PlanetRadius = 100.0f;
 	[Export] public float NoiseScale = 2.0f;
 	[Export] public float NoiseHeight = 10.0f;
 	
@@ -46,8 +46,8 @@ public partial class AgentSimulationSphere : Node3D
 	private const int DATA_TEX_WIDTH = 2048; // Ancho fijo de la textura de datos
 	
 	// Constantes Grilla
-	private const int GRID_SIZE = 32768; // Aumentado para 50k
-	private const int CELL_CAPACITY = 16; 
+	private const int GRID_SIZE = 131071; // Aumentado para 50k
+	private const int CELL_CAPACITY = 48; 
 
 	public override void _Ready()
 	{
@@ -58,40 +58,73 @@ public partial class AgentSimulationSphere : Node3D
 		SetupMarkers();
 	}
 
-	private void SetupData()
+private void SetupData()
 	{
 		_cpuAgents = new AgentDataSphere[AgentCount];
 		var rng = new RandomNumberGenerator();
 
-		Vector3 targetA = Vector3.Down * PlanetRadius;
-		Vector3 targetB = Vector3.Up * PlanetRadius;
+		Vector3 targetA = Vector3.Down * PlanetRadius; // Equipo A va al Sur
+		Vector3 targetB = Vector3.Up * PlanetRadius;   // Equipo B va al Norte
 
 		for (int i = 0; i < AgentCount; i++)
 		{
+			// 1. Definir Equipo
 			bool isTeamA = i < (AgentCount / 2);
+			
+			// 2. Definir Polo de Origen
 			Vector3 pole = isTeamA ? Vector3.Up : Vector3.Down;
 			
-			float angle = rng.Randf() * Mathf.Tau;
-			float spread = rng.RandfRange(0.1f, 0.5f);
+			// 3. Distribución Uniforme en Hemisferio (Evita amontonamiento en el polo)
+			// 'u' va de 0 (Polo) a 0.95 (Casi Ecuador). Si fuera 1.0 tocarían el ecuador.
+			float u = rng.RandfRange(0.0f, 0.95f); 
 			
-			Vector3 axis = Vector3.Right.Cross(pole).Normalized();
-			if (axis.LengthSquared() < 0.01f) axis = Vector3.Forward;
+			// Matemáticamente, para distribuir parejo en una esfera, el ángulo no es lineal.
+			// Usamos Acos para corregir la densidad del área.
+			float spreadAngle = Mathf.Acos(1.0f - u); 
 			
-			Vector3 offsetDir = pole.Rotated(Vector3.Right, spread).Rotated(pole, angle);
-			Vector3 startPos = offsetDir.Normalized() * PlanetRadius;
+			// Ángulo de rotación alrededor del polo (Azimuth)
+			float azimuthAngle = rng.Randf() * Mathf.Tau;
 
+			// 4. Calcular Posición
+			// Rotamos el vector "Arriba" primero hacia un lado (spread) y luego alrededor (azimuth)
+			// Nota: Usamos lógica de Cuaterniones implícita o vectores base para rotar desde el polo correcto.
+			
+			Vector3 offsetDir;
+			if (isTeamA) // Polo Norte (Up)
+			{
+				// Convertir esféricas a cartesianas partiendo de Y-Up
+				float x = Mathf.Sin(spreadAngle) * Mathf.Cos(azimuthAngle);
+				float z = Mathf.Sin(spreadAngle) * Mathf.Sin(azimuthAngle);
+				float y = Mathf.Cos(spreadAngle);
+				offsetDir = new Vector3(x, y, z);
+			}
+			else // Polo Sur (Down)
+			{
+				// Invertimos Y para el hemisferio sur
+				float x = Mathf.Sin(spreadAngle) * Mathf.Cos(azimuthAngle);
+				float z = Mathf.Sin(spreadAngle) * Mathf.Sin(azimuthAngle);
+				float y = -Mathf.Cos(spreadAngle);
+				offsetDir = new Vector3(x, y, z);
+			}
+
+			Vector3 startPos = offsetDir.Normalized() * PlanetRadius;
+			
+			// Targets cruzados
 			Vector3 myTarget = isTeamA ? targetA : targetB;
+			
+			// Colores de equipo
 			Vector4 color = isTeamA ? new Vector4(0, 0.5f, 1, 1) : new Vector4(1, 0.2f, 0, 1);
 
 			_cpuAgents[i] = new AgentDataSphere
 			{
-				Position = new Vector4(startPos.X, startPos.Y, startPos.Z, 0.5f),
+				Position = new Vector4(startPos.X, startPos.Y, startPos.Z, 0.5f), // W = Radio
 				Target = new Vector4(myTarget.X, myTarget.Y, myTarget.Z, 0.0f),
-				Velocity = new Vector4(0, 0, 0, 8.0f),
+				Velocity = new Vector4(0, 0, 0, 8.0f), // W = Max Speed
 				Color = color
 			};
 		}
 	}
+
 
 
 	private void SetupCompute()

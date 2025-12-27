@@ -5,7 +5,7 @@ using System.Collections.Generic;
 
 public partial class PlanetManager : Node3D
 {
-	[Export] public float Radius = 50.0f;
+	[Export] public float Radius = 100.0f;
 	[Export] public int Resolution = 64; // Vertices por lado de cara
 	[Export] public RDShaderFile ComputeShader;
 	[Export] public Material PlanetMaterial;
