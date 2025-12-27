@@ -14,7 +14,7 @@ public struct AgentDataSphere
 public partial class AgentSimulationSphere : Node3D
 {
 	[Export] public PlanetRender PlanetRenderer;
-	[Export] public int AgentCount = 100000; 
+	[Export] public int AgentCount = 1000; 
 	[Export] public RDShaderFile ComputeShaderFile;
 	[Export] public RDShaderFile BakerShaderFile;
 	
@@ -24,6 +24,11 @@ public partial class AgentSimulationSphere : Node3D
 	
 	private MultiMeshInstance3D _visualizer;
 	private RenderingDevice _rd;
+
+	private Rid _indirectBufferRid; // El buffer que contiene las órdenes de trabajo
+	private double _timeSinceLastUiUpdate = 0;
+
+
 	private Rid _shaderRid, _pipelineRid, _bufferRid, _uniformSetRid, _gridBufferRid;
 	private Rid _posTextureRid, _colorTextureRid; 
 	private Texture2Drd _posTextureRef, _colorTextureRef;
@@ -60,54 +65,75 @@ public partial class AgentSimulationSphere : Node3D
 		SetupMarkers();
 	}
 
-	public override void _Process(double delta)
+public override void _Process(double delta)
 	{
 		if (_rd == null || !_uniformSetRid.IsValid) return;
 
 		float dt = (float)delta;
 		float time = (float)Time.GetTicksMsec() / 1000.0f;
 
+		// Calculamos grupos en CPU (Es muy barato, no vale la pena complicarse)
+		uint groupsGrid = (uint)Mathf.CeilToInt(GRID_TOTAL_CELLS / 64.0f);
+		uint groupsAgents = (uint)Mathf.CeilToInt(AgentCount / 64.0f);
+
 		var computeList = _rd.ComputeListBegin();
 		_rd.ComputeListBindComputePipeline(computeList, _pipelineRid);
 		_rd.ComputeListBindUniformSet(computeList, _uniformSetRid, 0);
 
-		// --- FASE 0: CLEAR DENSITY GRID ---
+		// --- FASE 0: CLEAR ---
 		UpdateSimPushConstants(dt, time, 0, GRID_RES); 
 		_rd.ComputeListSetPushConstant(computeList, _pushConstantBuffer, (uint)_pushConstantBuffer.Length);
-		uint groupsGrid = (uint)Mathf.CeilToInt(GRID_TOTAL_CELLS / 64.0f);
 		_rd.ComputeListDispatch(computeList, groupsGrid, 1, 1);
 		_rd.ComputeListAddBarrier(computeList);
 
-		// --- FASE 1: POPULATE DENSITY ---
+		// --- FASE 1: POPULATE ---
 		UpdateSimPushConstants(dt, time, 1, AgentCount);
 		_rd.ComputeListSetPushConstant(computeList, _pushConstantBuffer, (uint)_pushConstantBuffer.Length);
-		uint groupsAgents = (uint)Mathf.CeilToInt(AgentCount / 64.0f);
 		_rd.ComputeListDispatch(computeList, groupsAgents, 1, 1);
 		_rd.ComputeListAddBarrier(computeList);
 
-		// --- FASE 2: UPDATE AGENTS ---
+		// --- FASE 2: UPDATE ---
 		UpdateSimPushConstants(dt, time, 2, AgentCount);
 		_rd.ComputeListSetPushConstant(computeList, _pushConstantBuffer, (uint)_pushConstantBuffer.Length);
 		_rd.ComputeListDispatch(computeList, groupsAgents, 1, 1);
 
 		_rd.ComputeListEnd();
 
-		if (_statsLabel != null)
-			 _statsLabel.Text = $"AGENTS: {AgentCount}\nFPS: {Engine.GetFramesPerSecond()}";
+		// --- UI THROTTLING (Para no ahogar la CPU actualizando texto) ---
+		_timeSinceLastUiUpdate += delta;
+		if (_timeSinceLastUiUpdate > 0.25) // 4 veces por segundo
+		{
+			if (_statsLabel != null)
+				 _statsLabel.Text = $"AGENTS: {AgentCount}\nFPS: {Engine.GetFramesPerSecond()}";
+			_timeSinceLastUiUpdate = 0;
+		}
 	}
 
-	private void UpdateSimPushConstants(float delta, float time, uint phase, int customParam)
+
+
+	private unsafe void UpdateSimPushConstants(float delta, float time, uint phase, int customParam)
 	{
-		PutFloat(delta, 0);
-		PutFloat(time, 4);
-		PutFloat(PlanetRadius, 8);
-		PutFloat(NoiseScale, 12);
-		PutFloat(NoiseHeight, 16);
-		PutUint((uint)customParam, 20); 
-		PutUint(phase, 24);
-		PutUint((uint)GRID_RES, 28); 
-		PutUint((uint)DATA_TEX_WIDTH, 32);
+		// Uso de punteros para evitar overhead de arrays y GC
+		fixed (byte* ptr = _pushConstantBuffer)
+		{
+			float* fPtr = (float*)ptr;
+			uint* uPtr = (uint*)ptr;
+			
+			// Escribimos directo en la memoria del buffer byte[]
+			fPtr[0] = delta;         // Offset 0
+			fPtr[1] = time;          // Offset 4
+			fPtr[2] = PlanetRadius;  // Offset 8
+			fPtr[3] = NoiseScale;    // Offset 12
+			fPtr[4] = NoiseHeight;   // Offset 16
+			
+			uPtr[5] = (uint)customParam; // Offset 20
+			uPtr[6] = phase;             // Offset 24
+			uPtr[7] = (uint)GRID_RES;    // Offset 28
+			uPtr[8] = (uint)DATA_TEX_WIDTH; // Offset 32
+		}
 	}
+
+	
 
 	private void PutFloat(float val, int offset) {
 		BitConverter.TryWriteBytes(new Span<byte>(_pushConstantBuffer, offset, 4), val);
@@ -116,26 +142,27 @@ public partial class AgentSimulationSphere : Node3D
 		BitConverter.TryWriteBytes(new Span<byte>(_pushConstantBuffer, offset, 4), val);
 	}
 
-	private void SetupCompute()
+private unsafe void SetupCompute()
 	{
 		if (ComputeShaderFile == null) return;
 		var shaderSpirv = ComputeShaderFile.GetSpirV();
 		_shaderRid = _rd.ShaderCreateFromSpirV(shaderSpirv);
-		if (!_shaderRid.IsValid) { GD.PrintErr("Error al compilar Shader Simulación"); return; }
+		if (!_shaderRid.IsValid) { GD.PrintErr("Error Shader Simulación"); return; }
 		
 		_pipelineRid = _rd.ComputePipelineCreate(_shaderRid);
 
-		// Buffer Agentes
+		// --- 1. BUFFER DE AGENTES ---
 		int bytes = Marshal.SizeOf<AgentDataSphere>() * AgentCount;
 		byte[] initData = StructureToByteArray(_cpuAgents);
 		_bufferRid = _rd.StorageBufferCreate((uint)bytes, initData);
 		
-		// Buffer DENSIDAD (GRID_RES^3 * 4 bytes)
+		// --- 2. BUFFER DE DENSIDAD ---
+		// Volvemos a la creación simple. No necesitamos flags especiales.
 		int gridBytes = GRID_TOTAL_CELLS * 4; 
 		_gridBufferRid = _rd.StorageBufferCreate((uint)gridBytes);
 		_rd.BufferClear(_gridBufferRid, 0, (uint)gridBytes);
 
-		// Texturas
+		// --- 3. TEXTURAS ---
 		int texHeight = Mathf.CeilToInt((float)AgentCount / DATA_TEX_WIDTH);
 		var fmt = new RDTextureFormat {
 			Width = (uint)DATA_TEX_WIDTH, Height = (uint)texHeight, Depth = 1,
@@ -147,7 +174,7 @@ public partial class AgentSimulationSphere : Node3D
 		_posTextureRef = new Texture2Drd { TextureRdRid = _posTextureRid };
 		_colorTextureRef = new Texture2Drd { TextureRdRid = _colorTextureRid };
 
-		// Uniforms
+		// --- 4. UNIFORMS ---
 		var uAgent = new RDUniform { UniformType = RenderingDevice.UniformType.StorageBuffer, Binding = 0 }; uAgent.AddId(_bufferRid);
 		var uGrid = new RDUniform { UniformType = RenderingDevice.UniformType.StorageBuffer, Binding = 1 }; uGrid.AddId(_gridBufferRid);
 		var uPosTex = new RDUniform { UniformType = RenderingDevice.UniformType.Image, Binding = 2 }; uPosTex.AddId(_posTextureRid);
@@ -156,11 +183,7 @@ public partial class AgentSimulationSphere : Node3D
 		var samplerState = new RDSamplerState { MagFilter = RenderingDevice.SamplerFilter.Linear, MinFilter = RenderingDevice.SamplerFilter.Linear };
 		_samplerRid = _rd.SamplerCreate(samplerState);
 		
-		// Validar que el Baker haya funcionado
-		if (!_bakedCubemapRid.IsValid || !_vectorFieldRid.IsValid) {
-			GD.PrintErr("CRÍTICO: Las texturas del Baker no son válidas. SetupCompute abortado.");
-			return;
-		}
+		if (!_bakedCubemapRid.IsValid || !_vectorFieldRid.IsValid) { GD.PrintErr("CRÍTICO: Texturas Baker no válidas."); return; }
 
 		var uHeight = new RDUniform { UniformType = RenderingDevice.UniformType.SamplerWithTexture, Binding = 4 }; 
 		uHeight.AddId(_samplerRid); uHeight.AddId(_bakedCubemapRid);
@@ -168,8 +191,6 @@ public partial class AgentSimulationSphere : Node3D
 		uVector.AddId(_samplerRid); uVector.AddId(_vectorFieldRid);
 
 		_uniformSetRid = _rd.UniformSetCreate(new Godot.Collections.Array<RDUniform> { uAgent, uGrid, uPosTex, uColTex, uHeight, uVector }, _shaderRid, 0);
-		
-		if (_uniformSetRid.IsValid) GD.Print("SetupCompute Exitoso. UniformSet creado.");
 	}
 
 	private void BakeTerrain()
