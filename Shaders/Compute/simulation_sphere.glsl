@@ -3,6 +3,7 @@
 
 layout(local_size_x = 64, local_size_y = 1, local_size_z = 1) in;
 
+// --- ESTRUCTURAS ---
 struct Agent {
     vec4 position; 
     vec4 target;   
@@ -10,34 +11,39 @@ struct Agent {
     vec4 color;    
 };
 
+// --- BINDINGS ---
 layout(set = 0, binding = 0, std430) buffer AgentsBuffer { Agent agents[]; };
 
-// AUMENTAMOS CAPACIDAD PARA MEJOR FÍSICA
 #define CELL_CAPACITY 32 
 #define DATA_PER_AGENT 4 
 #define STRIDE (1 + CELL_CAPACITY * DATA_PER_AGENT)
-
 layout(set = 0, binding = 1, std430) buffer GridBuffer { uint grid_data[]; };
 
 layout(set = 0, binding = 2, rgba32f) writeonly uniform image2D pos_image_out;
 layout(set = 0, binding = 3, rgba32f) writeonly uniform image2D color_image_out;
-layout(set = 0, binding = 4) uniform samplerCube height_map;
 
+layout(set = 0, binding = 4) uniform samplerCube height_map;
+layout(set = 0, binding = 5) uniform samplerCube vector_field;
+
+// --- PUSH CONSTANTS (48 Bytes totales con padding implícito) ---
 layout(push_constant) uniform Params {
-    layout(offset = 0) float delta_time;
-    layout(offset = 4) float time;
-    layout(offset = 8) float planet_radius;
-    layout(offset = 12) float noise_scale;
-    layout(offset = 16) float noise_height;
-    layout(offset = 20) uint agent_count;
-    layout(offset = 24) uint phase;       
-    layout(offset = 28) uint grid_size;   
-    layout(offset = 32) uint tex_width; 
+    float delta_time;
+    float time;
+    float planet_radius;
+    float noise_scale;
+    float noise_height;
+    uint agent_count;
+    uint phase;       
+    uint grid_size;   
+    uint tex_width; 
 } params;
+
+// --- FUNCIONES ---
 
 uint get_cell_hash(ivec3 cell) {
     const uint p1 = 73856093; const uint p2 = 19349663; const uint p3 = 83492791;
-    uint n = (uint(cell.x) * p1) ^ (uint(cell.y) * p2) ^ (uint(cell.z) * p3);
+    // abs() previene índices negativos en el hash
+    uint n = (uint(abs(cell.x)) * p1) ^ (uint(abs(cell.y)) * p2) ^ (uint(abs(cell.z)) * p3);
     return n % params.grid_size;
 }
 
@@ -50,8 +56,7 @@ void phase_clear() {
 void phase_populate() {
     uint idx = gl_GlobalInvocationID.x;
     if (idx >= params.agent_count) return;
-    float status = agents[idx].color.w;
-    if (status < 0.5 || status > 1.5) return;
+    if (agents[idx].color.w < 0.5) return; 
 
     vec3 pos = agents[idx].position.xyz;
     float radius = agents[idx].position.w;
@@ -60,6 +65,7 @@ void phase_populate() {
     ivec3 cell = ivec3(floor(pos / cell_size));
     uint hash_idx = get_cell_hash(cell);
     
+    // atomicAdd devuelve el valor ANTES de sumar
     uint slot = atomicAdd(grid_data[hash_idx * STRIDE], 1);
     if (slot < CELL_CAPACITY) {
         uint base_idx = hash_idx * STRIDE + 1 + (slot * DATA_PER_AGENT);
@@ -71,17 +77,16 @@ void phase_populate() {
 }
 
 
-// --- FASE 2: UPDATE (PULIDO) ---
+// --- FASE 2: UPDATE (CORREGIDA: FIlAS Y VIBRACIÓN) ---
 void phase_update() {
     uint idx = gl_GlobalInvocationID.x;
     if (idx >= params.agent_count) return;
 
     Agent me = agents[idx];
-    float status = me.color.w;
     int tex_w = int(params.tex_width);
     ivec2 coord = ivec2(int(idx) % tex_w, int(idx) / tex_w);
 
-    if (status < 0.5 || status > 1.5) {
+    if (me.color.w < 0.5) {
         imageStore(pos_image_out, coord, me.position);
         imageStore(color_image_out, coord, me.color);
         return;
@@ -89,35 +94,41 @@ void phase_update() {
 
     vec3 pos = me.position.xyz;
     vec3 vel = me.velocity.xyz;
-    vec3 target = me.target.xyz;
     float radius = me.position.w;
     float max_speed = me.velocity.w;
 
-    // 0. TERRENO
+    // 1. TERRENO & NAVEGACIÓN
     vec3 dir_norm = normalize(pos);
-    float n_val = texture(height_map, dir_norm).r; 
-    float h = max(0.0, n_val - 0.45); 
-    float terrain_radius = params.planet_radius + (h * params.noise_height);
+    float h_val = textureLod(height_map, dir_norm, 0.0).r;
+    float terrain_floor = params.planet_radius + (h_val * params.noise_height);
 
-    // --- FUERZAS ACUMULADAS ---
-    vec3 acc_force = vec3(0.0);
+    vec3 flow_dir = textureLod(vector_field, dir_norm, 0.0).rgb;
+    vec3 desired = flow_dir * max_speed;
+    vec3 steer = (desired - vel);
+    vec3 acc_force = steer * 4.0; 
 
-    // 1. SEEK (IR AL OBJETIVO)
-    // Reducimos el peso de llegada (1.0) para que la separación gane
-    vec3 desired = normalize(target - pos) * max_speed;
-    vec3 steer_seek = (desired - vel);
-    acc_force += steer_seek * 1.5; // Peso Seek normal
+    // /// --- FIX 1: ROMPER LAS FILAS (Wander Noise) ---
+    // Generamos un vector de ruido pseudo-aleatorio basado en el ID del agente y el tiempo.
+    // Esto asegura que cada agente tenga una ligera variación en su dirección, rompiendo la simetría de la grilla.
+    float noise_seed = float(idx) * 13.1 + params.time * 43.7; // Números primos arbitrarios
+    vec3 wander_noise = vec3(
+        sin(noise_seed),
+        cos(noise_seed * 1.3),
+        sin(noise_seed * 0.7)
+    );
+    // Añadimos una fuerza pequeña pero constante de caos.
+    acc_force += normalize(wander_noise) * 2.0; 
+    // -----------------------------------------------------
 
-    // 2. SEPARACIÓN (EVITAR VECINOS)
-    vec3 separation_force = vec3(0.0);
-    uint neighbors_count = 0;
-    
-    // VARIABLES DE COLISIÓN DURA
+
+    // 2. COLISIONES
+    vec3 separation = vec3(0.0);
     vec3 collision_push = vec3(0.0);
-
+    uint neighbors = 0;
+    
     float cell_size = 2.0;
     ivec3 my_cell = ivec3(floor(pos / cell_size));
-    
+
     for (int z = -1; z <= 1; z++) {
         for (int y = -1; y <= 1; y++) {
             for (int x = -1; x <= 1; x++) {
@@ -137,75 +148,80 @@ void phase_update() {
                     vec3 diff = pos - other_pos;
                     float dist_sq = dot(diff, diff);
                     
-                    if (dist_sq < 0.00001) continue; // Mismo agente
-
-                    float other_radius = uintBitsToFloat(grid_data[ptr + 3]);
-                    float dist = sqrt(dist_sq);
-                    float combined_radius = radius + other_radius;
-                    
-                    // A) ZONA DE SEPARACIÓN (Preventiva)
-                    // Actúa antes de tocarnos (Radio * 2.0)
-                    float safe_zone = combined_radius * 2.0; 
-                    if (dist < safe_zone) {
-                        // Cuanto más cerca, más fuerte la fuerza (Ley inversa)
-                        // Normalize(diff) es la dirección para huir
-                        vec3 flee_dir = diff / dist; 
-                        float strength = 1.0 - (dist / safe_zone); // 1.0 si tocamos, 0.0 si lejos
-                        separation_force += flee_dir * strength;
-                        neighbors_count++;
+                    if (dist_sq < 0.000001) {
+                         // Protección de singularidad (mantenemos esto)
+                         float noise = float(idx % 10u) * 0.1; 
+                         diff = vec3(0.01 + noise, 0.01, 0.0); 
+                         dist_sq = dot(diff, diff);
                     }
 
-                    // B) ZONA DE COLISIÓN (Correctiva)
-                    // Si ya nos tocamos, empujamos la POSICIÓN, no la velocidad
-                    if (dist < combined_radius) {
-                        float overlap = combined_radius - dist;
-                        // Corrección de posición directa (PBD)
-                        collision_push += (diff / dist) * overlap * 0.5;
+                    float other_r = uintBitsToFloat(grid_data[ptr + 3]);
+                    float dist = sqrt(dist_sq);
+                    float combined_r = radius + other_r;
+                    
+                    // Separación suave (Aumentamos un poco el radio de percepción a 2.5x)
+                    if (dist < combined_r * 2.5) {
+                        separation += (diff / dist) * (1.0 - dist / (combined_r * 2.5));
+                        neighbors++;
+                    }
+                    
+                    // Colisión Dura
+                    if (dist < combined_r) {
+                        float overlap = combined_r - dist;
+                        // /// --- FIX 2: REDUCIR VIBRACIÓN EN COLISIÓN DURA ---
+                        // Antes era * 0.5 (resolver 50% por frame). Ahora es * 0.15.
+                        // Esto hace que se "empujen" suavemente fuera de la colisión en varios frames, no de golpe.
+                        collision_push += (diff / dist) * overlap * 0.15;
+                        // -----------------------------------------------------
                     }
                 }
             }
         }
     }
 
-    // APLICAR FUERZAS
-    if (neighbors_count > 0) {
-        // Multiplicador ALTO (8.0). La separación es prioridad máxima.
-        // Divide por neighbors_count para promediar
-        acc_force += (separation_force / float(neighbors_count)) * 25.0; 
+    if (neighbors > 0) {
+        // /// --- FIX 3: REDUCIR FUERZA DE SEPARACIÓN ---
+        // Antes era 40.0. Bajamos a 15.0 para evitar que salgan disparados y luego reboten.
+        acc_force += (separation / float(neighbors)) * 15.0;
+        // -------------------------------------------------
     }
 
-    // APLICAR COLISIÓN DURA (Modifica posición directamente)
-    pos += collision_push;
+    // Limitador de presión (Fricción de multitud)
+    // Hacemos que la fricción empiece antes (con 5 vecinos ya se siente)
+    float crowd_friction = clamp(1.0 - (float(neighbors) / 10.0), 0.2, 1.0);
+    vel *= crowd_friction;
 
-    // INTEGRACIÓN
+    // Hard Clamp (Mantenemos esto como seguridad final)
+    float push_len = length(collision_push);
+    if (push_len > 0.3) { // Reduje un poco el límite máximo de empuje también
+        collision_push = (collision_push / push_len) * 0.3;
+    }
+
+    // 3. INTEGRACIÓN
+    pos += collision_push; 
     vel += acc_force * params.delta_time;
-    
-    // Fricción condicional: Si hay muchos vecinos, frenamos para evitar explosión
-    if (neighbors_count > 3) vel *= 0.90; 
-    else vel *= 0.99;
-
     if (length(vel) > max_speed) vel = normalize(vel) * max_speed;
     pos += vel * params.delta_time;
 
-    // PROYECCIÓN Y CIERRE (Igual que antes)
-    float current_h = length(pos);
-    if (current_h < terrain_radius) pos = normalize(pos) * terrain_radius;
-    else pos = normalize(pos) * max(terrain_radius, current_h - (9.8 * params.delta_time));
-
-    vec3 normal = normalize(pos);
-    vel = vel - dot(vel, normal) * normal;
-
-    // Si llegamos muy cerca del target, paramos todo para evitar jitter final
-    if (distance(pos, target) < params.planet_radius * 0.02) {
-         vel *= 0.5; // Frenado agresivo cerca del destino
+    // 4. SNAP TO TERRAIN (Mantenemos igual)
+    float current_r = length(pos);
+    if (current_r < terrain_floor) {
+        pos = normalize(pos) * terrain_floor;
+    } else {
+        pos = normalize(pos) * max(terrain_floor, current_r - (20.0 * params.delta_time));
     }
+    
+    vec3 normal = normalize(pos);
+    vel = vel - dot(vel, normal) * normal; 
 
     me.position.xyz = pos;
     me.velocity.xyz = vel;
     agents[idx] = me;
+
     imageStore(pos_image_out, coord, me.position);
     imageStore(color_image_out, coord, me.color);
 }
+
 
 
 void main() {

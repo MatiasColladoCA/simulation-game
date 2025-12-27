@@ -1,14 +1,10 @@
-[gd_scene load_steps=12 format=3 uid="uid://bbr5o4fhtiijr"]
+[gd_scene load_steps=10 format=3 uid="uid://bbr5o4fhtiijr"]
 
-[ext_resource type="Script" uid="uid://o4dlu7q8yd5k" path="res://Scripts/World/PlanetManager.cs" id="1_0xm2m"]
+[ext_resource type="Script" uid="uid://cfigf47cpsynr" path="res://Scripts/World/PlanetRender.cs" id="1_lquwl"]
 [ext_resource type="RDShaderFile" uid="uid://xnuj6qgxnse5" path="res://Shaders/Compute/simulation_sphere.glsl" id="2_1bvp3"]
-[ext_resource type="RDShaderFile" uid="uid://cghlwquisj12v" path="res://Shaders/Compute/planet_compute.glsl" id="2_h2yge"]
 [ext_resource type="Script" uid="uid://bkuli5elx204a" path="res://Scripts/Agents/AgentSimulationSphere.cs" id="3_h2yge"]
 [ext_resource type="Script" uid="uid://7k5lvwfwfhde" path="res://Scripts/Cameras/OrbitalCamera.cs" id="3_lquwl"]
 [ext_resource type="RDShaderFile" uid="uid://c3nhofkxnuwaa" path="res://Shaders/Compute/terrain_baker.glsl" id="6_7mycd"]
-
-[sub_resource type="StandardMaterial3D" id="StandardMaterial3D_1bvp3"]
-albedo_color = Color(0.22352941, 0.59607846, 0.28627452, 1)
 
 [sub_resource type="CapsuleMesh" id="CapsuleMesh_0xm2m"]
 radius = 4.801
@@ -29,10 +25,8 @@ reflected_light_source = 2
 
 [node name="Node3D" type="Node3D"]
 
-[node name="PlanetManager" type="Node3D" parent="."]
-script = ExtResource("1_0xm2m")
-ComputeShader = ExtResource("2_h2yge")
-PlanetMaterial = SubResource("StandardMaterial3D_1bvp3")
+[node name="WorldRenderer" type="Node3D" parent="."]
+script = ExtResource("1_lquwl")
 
 [node name="DirectionalLight3D" type="DirectionalLight3D" parent="."]
 transform = Transform3D(0.7071068, -0.5, 0.5, 0, 0.7071068, 0.70710677, -0.7071068, -0.5, 0.5, -324.38684, 324.88275, 40)
@@ -69,10 +63,14 @@ handle_input_locally = false
 size = Vector2i(382, 214)
 render_target_update_mode = 0
 
-[node name="AgentVisualizer" type="MultiMeshInstance3D" parent="."]
-
-[node name="AgentSimulationSphere" type="Node3D" parent="." node_paths=PackedStringArray("_visualizer")]
+[node name="AgentSimulationSphere" type="Node3D" parent="." node_paths=PackedStringArray("PlanetRenderer", "_visualizer")]
 script = ExtResource("3_h2yge")
+PlanetRenderer = NodePath("../WorldRenderer")
 ComputeShaderFile = ExtResource("2_1bvp3")
-_visualizer = NodePath("../AgentVisualizer")
+_visualizer = NodePath("AgentVisualizer")
 BakerShaderFile = ExtResource("6_7mycd")
+
+[node name="AgentVisualizer" type="MultiMeshInstance3D" parent="AgentSimulationSphere"]
+
+[node name="PlanetMeshVisual" type="MeshInstance3D" parent="AgentSimulationSphere"]
+skeleton = NodePath("../../WorldRenderer")
