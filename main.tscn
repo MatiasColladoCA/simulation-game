@@ -35,6 +35,7 @@ shadow_enabled = true
 
 [node name="MeshInstance3D" type="MeshInstance3D" parent="."]
 transform = Transform3D(0.9703188, -0.1363806, 0.1997041, 0.15461086, 0.9848391, -0.07866084, -0.18594857, 0.10720252, 0.97669375, 0, 0, 0)
+visible = false
 mesh = SubResource("CapsuleMesh_0xm2m")
 
 [node name="WorldEnvironment" type="WorldEnvironment" parent="."]
@@ -63,14 +64,14 @@ handle_input_locally = false
 size = Vector2i(382, 214)
 render_target_update_mode = 0
 
-[node name="AgentSimulationSphere" type="Node3D" parent="." node_paths=PackedStringArray("PlanetRenderer", "_visualizer")]
+[node name="AgentSimulationSphere" type="Node3D" parent="." node_paths=PackedStringArray("PlanetRenderer")]
 script = ExtResource("3_h2yge")
 PlanetRenderer = NodePath("../WorldRenderer")
 ComputeShaderFile = ExtResource("2_1bvp3")
-_visualizer = NodePath("AgentVisualizer")
 BakerShaderFile = ExtResource("6_7mycd")
 
 [node name="AgentVisualizer" type="MultiMeshInstance3D" parent="AgentSimulationSphere"]
+visible = false
 
 [node name="PlanetMeshVisual" type="MeshInstance3D" parent="AgentSimulationSphere"]
 skeleton = NodePath("../../WorldRenderer")

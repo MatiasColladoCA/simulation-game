@@ -5,265 +5,201 @@ using System.Runtime.InteropServices;
 [StructLayout(LayoutKind.Sequential, Pack = 16)]
 public struct AgentDataSphere
 {
-	public Vector4 Position; // xyz: pos, w: radius
-	public Vector4 Target;   // xyz: target
-	public Vector4 Velocity; // xyz: vel, w: max_speed
-	public Vector4 Color;    // w: status
+	public Vector4 Position; 
+	public Vector4 Target;   
+	public Vector4 Velocity; 
+	public Vector4 Color;    
 }
 
 public partial class AgentSimulationSphere : Node3D
 {
-
 	[Export] public PlanetRender PlanetRenderer;
-
-	// Agrega esta variable exportada para referenciar al planeta visual
-	// [Export] public MeshInstance3D PlanetMeshVisual;
-	[Export] public int AgentCount = 10000; // ¡Probemos con 50k!
+	[Export] public int AgentCount = 100000; 
 	[Export] public RDShaderFile ComputeShaderFile;
+	[Export] public RDShaderFile BakerShaderFile;
 	
-	// Parámetros del Planeta
 	[Export] public float PlanetRadius = 100.0f;
 	[Export] public float NoiseScale = 2.0f;
 	[Export] public float NoiseHeight = 10.0f;
 	
-	[Export] private MultiMeshInstance3D _visualizer;
-
-	// [Export] public Cubemap HeightMapCubemap;
-
-	[Export] public RDShaderFile BakerShaderFile;
-	// Variable para guardar el RID del Cubemap generado
-	private const int CUBEMAP_SIZE = 1024; // Resolución por cara (1024x1024)
-
+	private MultiMeshInstance3D _visualizer;
 	private RenderingDevice _rd;
 	private Rid _shaderRid, _pipelineRid, _bufferRid, _uniformSetRid, _gridBufferRid;
-	// Nuevas texturas para comunicar GPU Compute -> GPU Visual
 	private Rid _posTextureRid, _colorTextureRid; 
 	private Texture2Drd _posTextureRef, _colorTextureRef;
+	private Rid _samplerRid, _bakedCubemapRid, _vectorFieldRid;
 
-	// --- VARIABLES DEL CUBEMAP ---
-	private Rid _samplerRid; 
-	private Rid _bakedCubemapRid; // <--- ESTA FALTABA EN TU CONTEXTO
-
-	private AgentDataSphere[] _cpuAgents; // Solo para init
+	private AgentDataSphere[] _cpuAgents; 
 	private Label _statsLabel;
 	
-	// Configuración de la "Hoja de Datos" (Textura)
-	private const int DATA_TEX_WIDTH = 2048; // Ancho fijo de la textura de datos
+	// --- CONSTANTES ---
+	private const int CUBEMAP_SIZE = 1024; 
+	private const int DATA_TEX_WIDTH = 2048; 
 	
-	// Constantes Grilla
-	private const int GRID_SIZE = 131071; // Aumentado para 50k
-	private const int CELL_CAPACITY = 48; 
+	// Grilla de Densidad (64x64x64)
+	private const int GRID_RES = 64; 
+	private const int GRID_TOTAL_CELLS = GRID_RES * GRID_RES * GRID_RES;
 
-
-
-	private Rid _vectorFieldRid;
+	private byte[] _pushConstantBuffer = new byte[48]; 
 
 	public override void _Ready()
 	{
+		_rd = RenderingServer.GetRenderingDevice();
 		SetupUI();
+		
+		// 1. Hornear Terreno (Es vital que esto ocurra antes de SetupCompute)
+		if (BakerShaderFile != null) BakeTerrain();
+		else GD.PrintErr("Falta BakerShaderFile");
+		
+		// 2. Inicializar Datos y Compute
 		SetupData();
 		SetupCompute();
+		
+		// 3. Inicializar Visuales
 		SetupVisuals(); 
 		SetupMarkers();
 	}
 
-private void SetupData()
+	public override void _Process(double delta)
 	{
-		_cpuAgents = new AgentDataSphere[AgentCount];
-		var rng = new RandomNumberGenerator();
+		if (_rd == null || !_uniformSetRid.IsValid) return;
 
-		Vector3 targetA = Vector3.Down * PlanetRadius; // Equipo A va al Sur
-		Vector3 targetB = Vector3.Up * PlanetRadius;   // Equipo B va al Norte
+		float dt = (float)delta;
+		float time = (float)Time.GetTicksMsec() / 1000.0f;
 
-		for (int i = 0; i < AgentCount; i++)
-		{
-			// 1. Definir Equipo
-			bool isTeamA = i < (AgentCount / 2);
-			
-			// 2. Definir Polo de Origen
-			Vector3 pole = isTeamA ? Vector3.Up : Vector3.Down;
-			
-			// 3. Distribución Uniforme en Hemisferio (Evita amontonamiento en el polo)
-			// 'u' va de 0 (Polo) a 0.95 (Casi Ecuador). Si fuera 1.0 tocarían el ecuador.
-			float u = rng.RandfRange(0.0f, 0.95f); 
-			
-			// Matemáticamente, para distribuir parejo en una esfera, el ángulo no es lineal.
-			// Usamos Acos para corregir la densidad del área.
-			float spreadAngle = Mathf.Acos(1.0f - u); 
-			
-			// Ángulo de rotación alrededor del polo (Azimuth)
-			float azimuthAngle = rng.Randf() * Mathf.Tau;
+		var computeList = _rd.ComputeListBegin();
+		_rd.ComputeListBindComputePipeline(computeList, _pipelineRid);
+		_rd.ComputeListBindUniformSet(computeList, _uniformSetRid, 0);
 
-			// 4. Calcular Posición
-			// Rotamos el vector "Arriba" primero hacia un lado (spread) y luego alrededor (azimuth)
-			// Nota: Usamos lógica de Cuaterniones implícita o vectores base para rotar desde el polo correcto.
-			
-			Vector3 offsetDir;
-			if (isTeamA) // Polo Norte (Up)
-			{
-				// Convertir esféricas a cartesianas partiendo de Y-Up
-				float x = Mathf.Sin(spreadAngle) * Mathf.Cos(azimuthAngle);
-				float z = Mathf.Sin(spreadAngle) * Mathf.Sin(azimuthAngle);
-				float y = Mathf.Cos(spreadAngle);
-				offsetDir = new Vector3(x, y, z);
-			}
-			else // Polo Sur (Down)
-			{
-				// Invertimos Y para el hemisferio sur
-				float x = Mathf.Sin(spreadAngle) * Mathf.Cos(azimuthAngle);
-				float z = Mathf.Sin(spreadAngle) * Mathf.Sin(azimuthAngle);
-				float y = -Mathf.Cos(spreadAngle);
-				offsetDir = new Vector3(x, y, z);
-			}
+		// --- FASE 0: CLEAR DENSITY GRID ---
+		UpdateSimPushConstants(dt, time, 0, GRID_RES); 
+		_rd.ComputeListSetPushConstant(computeList, _pushConstantBuffer, (uint)_pushConstantBuffer.Length);
+		uint groupsGrid = (uint)Mathf.CeilToInt(GRID_TOTAL_CELLS / 64.0f);
+		_rd.ComputeListDispatch(computeList, groupsGrid, 1, 1);
+		_rd.ComputeListAddBarrier(computeList);
 
-			Vector3 startPos = offsetDir.Normalized() * PlanetRadius;
-			
-			// Targets cruzados
-			Vector3 myTarget = isTeamA ? targetA : targetB;
-			
-			// Colores de equipo
-			Vector4 color = isTeamA ? new Vector4(0, 0.5f, 1, 1) : new Vector4(1, 0.2f, 0, 1);
+		// --- FASE 1: POPULATE DENSITY ---
+		UpdateSimPushConstants(dt, time, 1, AgentCount);
+		_rd.ComputeListSetPushConstant(computeList, _pushConstantBuffer, (uint)_pushConstantBuffer.Length);
+		uint groupsAgents = (uint)Mathf.CeilToInt(AgentCount / 64.0f);
+		_rd.ComputeListDispatch(computeList, groupsAgents, 1, 1);
+		_rd.ComputeListAddBarrier(computeList);
 
-			_cpuAgents[i] = new AgentDataSphere
-			{
-				Position = new Vector4(startPos.X, startPos.Y, startPos.Z, 0.5f), // W = Radio
-				Target = new Vector4(myTarget.X, myTarget.Y, myTarget.Z, 0.0f),
-				Velocity = new Vector4(0, 0, 0, 8.0f), // W = Max Speed
-				Color = color
-			};
-		}
+		// --- FASE 2: UPDATE AGENTS ---
+		UpdateSimPushConstants(dt, time, 2, AgentCount);
+		_rd.ComputeListSetPushConstant(computeList, _pushConstantBuffer, (uint)_pushConstantBuffer.Length);
+		_rd.ComputeListDispatch(computeList, groupsAgents, 1, 1);
+
+		_rd.ComputeListEnd();
+
+		if (_statsLabel != null)
+			 _statsLabel.Text = $"AGENTS: {AgentCount}\nFPS: {Engine.GetFramesPerSecond()}";
 	}
 
+	private void UpdateSimPushConstants(float delta, float time, uint phase, int customParam)
+	{
+		PutFloat(delta, 0);
+		PutFloat(time, 4);
+		PutFloat(PlanetRadius, 8);
+		PutFloat(NoiseScale, 12);
+		PutFloat(NoiseHeight, 16);
+		PutUint((uint)customParam, 20); 
+		PutUint(phase, 24);
+		PutUint((uint)GRID_RES, 28); 
+		PutUint((uint)DATA_TEX_WIDTH, 32);
+	}
 
+	private void PutFloat(float val, int offset) {
+		BitConverter.TryWriteBytes(new Span<byte>(_pushConstantBuffer, offset, 4), val);
+	}
+	private void PutUint(uint val, int offset) {
+		BitConverter.TryWriteBytes(new Span<byte>(_pushConstantBuffer, offset, 4), val);
+	}
 
 	private void SetupCompute()
-		{
-			// 1. Validaciones e Inicialización Global
-			if (ComputeShaderFile == null || BakerShaderFile == null) { GD.PrintErr("Faltan Shaders"); return; }
-			
-			_rd = RenderingServer.GetRenderingDevice();
-			if (_rd == null)
-			{
-				GD.PrintErr("Error: No se pudo obtener RenderingDevice (Usa Vulkan).");
-				return;
-			}
+	{
+		if (ComputeShaderFile == null) return;
+		var shaderSpirv = ComputeShaderFile.GetSpirV();
+		_shaderRid = _rd.ShaderCreateFromSpirV(shaderSpirv);
+		if (!_shaderRid.IsValid) { GD.PrintErr("Error al compilar Shader Simulación"); return; }
+		
+		_pipelineRid = _rd.ComputePipelineCreate(_shaderRid);
 
-			// 2. EJECUTAR EL BAKER (Genera _bakedCubemapRid)
-			BakeTerrain(); 
+		// Buffer Agentes
+		int bytes = Marshal.SizeOf<AgentDataSphere>() * AgentCount;
+		byte[] initData = StructureToByteArray(_cpuAgents);
+		_bufferRid = _rd.StorageBufferCreate((uint)bytes, initData);
+		
+		// Buffer DENSIDAD (GRID_RES^3 * 4 bytes)
+		int gridBytes = GRID_TOTAL_CELLS * 4; 
+		_gridBufferRid = _rd.StorageBufferCreate((uint)gridBytes);
+		_rd.BufferClear(_gridBufferRid, 0, (uint)gridBytes);
 
-			// 3. Preparar Pipeline de Simulación
-			var shaderSpirv = ComputeShaderFile.GetSpirV();
-			_shaderRid = _rd.ShaderCreateFromSpirV(shaderSpirv);
-			_pipelineRid = _rd.ComputePipelineCreate(_shaderRid);
+		// Texturas
+		int texHeight = Mathf.CeilToInt((float)AgentCount / DATA_TEX_WIDTH);
+		var fmt = new RDTextureFormat {
+			Width = (uint)DATA_TEX_WIDTH, Height = (uint)texHeight, Depth = 1,
+			Format = RenderingDevice.DataFormat.R32G32B32A32Sfloat,
+			UsageBits = RenderingDevice.TextureUsageBits.StorageBit | RenderingDevice.TextureUsageBits.SamplingBit | RenderingDevice.TextureUsageBits.CanUpdateBit | RenderingDevice.TextureUsageBits.CanCopyFromBit
+		};
+		_posTextureRid = _rd.TextureCreate(fmt, new RDTextureView(), new Godot.Collections.Array<byte[]>());
+		_colorTextureRid = _rd.TextureCreate(fmt, new RDTextureView(), new Godot.Collections.Array<byte[]>());
+		_posTextureRef = new Texture2Drd { TextureRdRid = _posTextureRid };
+		_colorTextureRef = new Texture2Drd { TextureRdRid = _colorTextureRid };
 
-			// 4. Crear Buffers (SSBO)
-			int bytes = Marshal.SizeOf<AgentDataSphere>() * AgentCount;
-			byte[] initData = StructureToByteArray(_cpuAgents);
-			_bufferRid = _rd.StorageBufferCreate((uint)bytes, initData);
-
-			int stride = 1 + CELL_CAPACITY; 
-			int gridBytes = GRID_SIZE * stride * 4; 
-			byte[] gridData = new byte[gridBytes]; 
-			_gridBufferRid = _rd.StorageBufferCreate((uint)gridBytes, gridData);
-
-			// 5. Crear Texturas de Salida (Pos/Color)
-			int texHeight = Mathf.CeilToInt((float)AgentCount / DATA_TEX_WIDTH);
-			var fmt = new RDTextureFormat();
-			fmt.Width = (uint)DATA_TEX_WIDTH;
-			fmt.Height = (uint)texHeight;
-			fmt.Depth = 1;
-			fmt.Format = RenderingDevice.DataFormat.R32G32B32A32Sfloat;
-			fmt.UsageBits = RenderingDevice.TextureUsageBits.StorageBit | 
-							RenderingDevice.TextureUsageBits.SamplingBit | 
-							RenderingDevice.TextureUsageBits.CanUpdateBit | 
-							RenderingDevice.TextureUsageBits.CanCopyFromBit;
-
-			var view = new RDTextureView();
-			_posTextureRid = _rd.TextureCreate(fmt, view, new Godot.Collections.Array<byte[]>());
-			_colorTextureRid = _rd.TextureCreate(fmt, view, new Godot.Collections.Array<byte[]>());
-
-			_posTextureRef = new Texture2Drd { TextureRdRid = _posTextureRid };
-			_colorTextureRef = new Texture2Drd { TextureRdRid = _colorTextureRid };
-
-			// 6. Crear Uniforms
-			var uAgent = new RDUniform { UniformType = RenderingDevice.UniformType.StorageBuffer, Binding = 0 };
-			uAgent.AddId(_bufferRid);
-			
-			var uGrid = new RDUniform { UniformType = RenderingDevice.UniformType.StorageBuffer, Binding = 1 };
-			uGrid.AddId(_gridBufferRid);
-
-			var uPosTex = new RDUniform { UniformType = RenderingDevice.UniformType.Image, Binding = 2 };
-			uPosTex.AddId(_posTextureRid);
-
-			var uColTex = new RDUniform { UniformType = RenderingDevice.UniformType.Image, Binding = 3 };
-			uColTex.AddId(_colorTextureRid);
-
-			// --- BINDING 4: EL CUBEMAP GENERADO ---
-			var uHeightMap = new RDUniform { 
-				UniformType = RenderingDevice.UniformType.SamplerWithTexture, 
-				Binding = 4 
-			};
-
-			var samplerState = new RDSamplerState { 
-				MagFilter = RenderingDevice.SamplerFilter.Linear, 
-				MinFilter = RenderingDevice.SamplerFilter.Linear 
-			};
-			_samplerRid = _rd.SamplerCreate(samplerState);
-			
-			uHeightMap.AddId(_samplerRid);
-			uHeightMap.AddId(_bakedCubemapRid); // Creado en BakeTerrain()
-
-			// --- NUEVO BINDING 5: VECTOR FIELD ---
-			var uVectorField = new RDUniform {
-				UniformType = RenderingDevice.UniformType.SamplerWithTexture,
-				Binding = 5
-			};
-			uVectorField.AddId(_samplerRid); // Mismo sampler
-			uVectorField.AddId(_vectorFieldRid); // <--- La textura de vectores
-
-			// AGREGAR AL SET FINAL
-			_uniformSetRid = _rd.UniformSetCreate(new Godot.Collections.Array<RDUniform> { 
-				uAgent, uGrid, uPosTex, uColTex, uHeightMap, uVectorField 
-			}, _shaderRid, 0);
+		// Uniforms
+		var uAgent = new RDUniform { UniformType = RenderingDevice.UniformType.StorageBuffer, Binding = 0 }; uAgent.AddId(_bufferRid);
+		var uGrid = new RDUniform { UniformType = RenderingDevice.UniformType.StorageBuffer, Binding = 1 }; uGrid.AddId(_gridBufferRid);
+		var uPosTex = new RDUniform { UniformType = RenderingDevice.UniformType.Image, Binding = 2 }; uPosTex.AddId(_posTextureRid);
+		var uColTex = new RDUniform { UniformType = RenderingDevice.UniformType.Image, Binding = 3 }; uColTex.AddId(_colorTextureRid);
+		
+		var samplerState = new RDSamplerState { MagFilter = RenderingDevice.SamplerFilter.Linear, MinFilter = RenderingDevice.SamplerFilter.Linear };
+		_samplerRid = _rd.SamplerCreate(samplerState);
+		
+		// Validar que el Baker haya funcionado
+		if (!_bakedCubemapRid.IsValid || !_vectorFieldRid.IsValid) {
+			GD.PrintErr("CRÍTICO: Las texturas del Baker no son válidas. SetupCompute abortado.");
+			return;
 		}
 
+		var uHeight = new RDUniform { UniformType = RenderingDevice.UniformType.SamplerWithTexture, Binding = 4 }; 
+		uHeight.AddId(_samplerRid); uHeight.AddId(_bakedCubemapRid);
+		var uVector = new RDUniform { UniformType = RenderingDevice.UniformType.SamplerWithTexture, Binding = 5 }; 
+		uVector.AddId(_samplerRid); uVector.AddId(_vectorFieldRid);
 
-	// --- BAKE TERRAIN ACTUALIZADO ---
+		_uniformSetRid = _rd.UniformSetCreate(new Godot.Collections.Array<RDUniform> { uAgent, uGrid, uPosTex, uColTex, uHeight, uVector }, _shaderRid, 0);
+		
+		if (_uniformSetRid.IsValid) GD.Print("SetupCompute Exitoso. UniformSet creado.");
+	}
+
 	private void BakeTerrain()
 	{
-		// 1. Crear Cubemap de Altura (R32F)
-		var fmtHeight = new RDTextureFormat();
-		fmtHeight.Width = (uint)CUBEMAP_SIZE; fmtHeight.Height = (uint)CUBEMAP_SIZE;
-		fmtHeight.Depth = 1; fmtHeight.ArrayLayers = 6;
-		fmtHeight.TextureType = RenderingDevice.TextureType.Cube;
-		fmtHeight.Format = RenderingDevice.DataFormat.R32Sfloat;
-		fmtHeight.UsageBits = RenderingDevice.TextureUsageBits.StorageBit | RenderingDevice.TextureUsageBits.SamplingBit | RenderingDevice.TextureUsageBits.CanCopyFromBit;
+		// 1. Texturas
+		var fmtHeight = new RDTextureFormat {
+			Width = (uint)CUBEMAP_SIZE, Height = (uint)CUBEMAP_SIZE, Depth = 1, ArrayLayers = 6,
+			TextureType = RenderingDevice.TextureType.Cube, Format = RenderingDevice.DataFormat.R32Sfloat,
+			UsageBits = RenderingDevice.TextureUsageBits.StorageBit | RenderingDevice.TextureUsageBits.SamplingBit | RenderingDevice.TextureUsageBits.CanCopyFromBit
+		};
 		_bakedCubemapRid = _rd.TextureCreate(fmtHeight, new RDTextureView(), new Godot.Collections.Array<byte[]>());
 
-		// 2. NUEVO: Crear Cubemap de Vectores (RGBA16F para precisión de vectores)
-		var fmtVectors = new RDTextureFormat();
-		fmtVectors.Width = (uint)CUBEMAP_SIZE; fmtVectors.Height = (uint)CUBEMAP_SIZE;
-		fmtVectors.Depth = 1; fmtVectors.ArrayLayers = 6;
-		fmtVectors.TextureType = RenderingDevice.TextureType.Cube;
-		fmtVectors.Format = RenderingDevice.DataFormat.R16G16B16A16Sfloat; // 4 Canales
-		fmtVectors.UsageBits = RenderingDevice.TextureUsageBits.StorageBit | RenderingDevice.TextureUsageBits.SamplingBit | RenderingDevice.TextureUsageBits.CanCopyFromBit;
+		var fmtVectors = new RDTextureFormat {
+			Width = (uint)CUBEMAP_SIZE, Height = (uint)CUBEMAP_SIZE, Depth = 1, ArrayLayers = 6,
+			TextureType = RenderingDevice.TextureType.Cube, Format = RenderingDevice.DataFormat.R16G16B16A16Sfloat,
+			UsageBits = RenderingDevice.TextureUsageBits.StorageBit | RenderingDevice.TextureUsageBits.SamplingBit | RenderingDevice.TextureUsageBits.CanCopyFromBit
+		};
 		_vectorFieldRid = _rd.TextureCreate(fmtVectors, new RDTextureView(), new Godot.Collections.Array<byte[]>());
 
-		// 3. Pipeline Baker
+		// 2. Pipeline
 		var bakerSpirv = BakerShaderFile.GetSpirV();
 		var bakerShaderRid = _rd.ShaderCreateFromSpirV(bakerSpirv);
 		var bakerPipeline = _rd.ComputePipelineCreate(bakerShaderRid);
 
-		// 4. Uniforms del Baker (Ahora son 2 salidas)
-		var uOutHeight = new RDUniform { UniformType = RenderingDevice.UniformType.Image, Binding = 0 };
-		uOutHeight.AddId(_bakedCubemapRid);
-		
-		var uOutVectors = new RDUniform { UniformType = RenderingDevice.UniformType.Image, Binding = 1 };
-		uOutVectors.AddId(_vectorFieldRid); // Binding 1
+		// 3. Uniforms
+		var uOutHeight = new RDUniform { UniformType = RenderingDevice.UniformType.Image, Binding = 0 }; uOutHeight.AddId(_bakedCubemapRid);
+		var uOutVectors = new RDUniform { UniformType = RenderingDevice.UniformType.Image, Binding = 1 }; uOutVectors.AddId(_vectorFieldRid);
+		var bakerSet = _rd.UniformSetCreate(new Godot.Collections.Array<RDUniform> { uOutHeight, uOutVectors }, bakerShaderRid, 0);
 
-		var bakerUniformSet = _rd.UniformSetCreate(new Godot.Collections.Array<RDUniform> { uOutHeight, uOutVectors }, bakerShaderRid, 0);
-
-		// 5. Push Constants & Dispatch (Igual)
+		// 4. Dispatch (Manual MemoryStream para el baker)
 		var stream = new System.IO.MemoryStream();
 		var writer = new System.IO.BinaryWriter(stream);
 		writer.Write((float)PlanetRadius);
@@ -271,163 +207,96 @@ private void SetupData()
 		writer.Write((float)NoiseHeight);
 		writer.Write((uint)CUBEMAP_SIZE);
 		byte[] pushBytes = stream.ToArray();
-
+		
 		var computeList = _rd.ComputeListBegin();
 		_rd.ComputeListBindComputePipeline(computeList, bakerPipeline);
-		_rd.ComputeListBindUniformSet(computeList, bakerUniformSet, 0);
+		_rd.ComputeListBindUniformSet(computeList, bakerSet, 0);
 		_rd.ComputeListSetPushConstant(computeList, pushBytes, (uint)pushBytes.Length);
 		
 		uint groups = (uint)Mathf.CeilToInt(CUBEMAP_SIZE / 32.0f);
 		_rd.ComputeListDispatch(computeList, groups, groups, 6);
 		_rd.ComputeListEnd();
 		
-		// Limpieza local
-		_rd.FreeRid(bakerPipeline);
-		_rd.FreeRid(bakerShaderRid);
-		_rd.FreeRid(bakerUniformSet);
-		
-		GD.Print("Terrain & Vector Field Baked.");
+		_rd.FreeRid(bakerPipeline); _rd.FreeRid(bakerShaderRid); _rd.FreeRid(bakerSet);
+		GD.Print("Terrain Baked.");
 	}
 
-
-private void SetupVisuals()
-    {
-        // 1. Configurar Visualizador de Agentes
-        if (_visualizer == null)
-        {
-            _visualizer = GetNodeOrNull<MultiMeshInstance3D>("AgentVisualizer");
-            if (_visualizer == null)
-            {
-                _visualizer = new MultiMeshInstance3D { Name = "AgentVisualizer" };
-                AddChild(_visualizer);
-            }
-        }
-
-        _visualizer.Multimesh = new MultiMesh
-        {
-            TransformFormat = MultiMesh.TransformFormatEnum.Transform3D,
-            UseColors = false,
-            InstanceCount = AgentCount,
-            Mesh = new QuadMesh { 
-                Size = new Vector2(1.0f, 1.0f), // Aumenté el tamaño a 1.0 para verlos mejor por ahora
-                Material = new ShaderMaterial { 
-                    Shader = GD.Load<Shader>("res://Shaders/Visual/SphereImpostor.gdshader") 
-                } 
-            }
-        };
-
-        // --- LA LÍNEA QUE FALTABA (FIX DE INVISIBILIDAD) ---
-        // Definimos una caja de 4000x4000 metros. Esto obliga a Godot a dibujarlos siempre.
-        _visualizer.Multimesh.CustomAabb = new Aabb(new Vector3(-2000, -2000, -2000), new Vector3(4000, 4000, 4000));
-        // ---------------------------------------------------
-
-        // Setear params de agentes
-        var agentMat = _visualizer.Multimesh.Mesh.SurfaceGetMaterial(0) as ShaderMaterial;
-        if (agentMat != null)
-        {
-            agentMat.SetShaderParameter("agent_pos_texture", _posTextureRef);
-            agentMat.SetShaderParameter("agent_color_texture", _colorTextureRef);
-            agentMat.SetShaderParameter("tex_width", DATA_TEX_WIDTH);
-            
-            // Ajuste visual: Levantar ligeramente los agentes para que no se entierren en el suelo
-            // Si tu shader de impostor lo soporta, o aseguramos que el radio en la simulación sea (PlanetRadius + 0.5)
-        }
-        
-        // 2. CONFIGURAR PLANETA (Se mantiene igual que antes)
-        if (PlanetRenderer != null)
-        {
-            if (_bakedCubemapRid.IsValid)
-            {
-                PlanetRenderer.Initialize(_bakedCubemapRid, _vectorFieldRid, PlanetRadius, NoiseHeight);
-            }
-        }
-    }
-
-
-
-
-
-	public override void _Process(double delta)
+	private void SetupData()
 	{
-		if (_rd == null) return;
+		_cpuAgents = new AgentDataSphere[AgentCount];
+		var rng = new RandomNumberGenerator();
+		Vector3 targetA = Vector3.Down * PlanetRadius;
+		Vector3 targetB = Vector3.Up * PlanetRadius;
 
-		// Fases Compute (Igual que antes)
-		DispatchPhase(0, (float)delta, GRID_SIZE);
-		DispatchPhase(1, (float)delta, AgentCount);
-		DispatchPhase(2, (float)delta, AgentCount); // En esta fase ahora escribimos a la textura
+		for (int i = 0; i < AgentCount; i++)
+		{
+			bool isTeamA = i < (AgentCount / 2);
+			float u = rng.RandfRange(0.0f, 0.95f);
+			float spread = Mathf.Acos(1.0f - u);
+			float az = rng.Randf() * Mathf.Tau;
+			
+			float y = isTeamA ? Mathf.Cos(spread) : -Mathf.Cos(spread);
+			float r = Mathf.Sin(spread);
+			float x = r * Mathf.Cos(az);
+			float z = r * Mathf.Sin(az);
+			
+			Vector3 pos = new Vector3(x, y, z).Normalized() * PlanetRadius;
+			Vector4 color = isTeamA ? new Vector4(0, 0.5f, 1, 1) : new Vector4(1, 0.2f, 0, 1);
+			Vector3 tgt = isTeamA ? targetA : targetB;
 
-		// _rd.Submit();
-		
-		// _rd.Sync(); //<--- ELIMINADO. No esperamos a la GPU.
-		// BufferGetData <--- ELIMINADO. No leemos datos.
-		// Bucle for <--- ELIMINADO. No actualizamos visuales en CPU.
-		
-		// Actualizar UI (Usamos valores ficticios o calculados en GPU más adelante)
-		// Por ahora, solo mostramos FPS para ver el rendimiento puro
-		_statsLabel.Text = $"AGENTS: {AgentCount}\nFPS: {Engine.GetFramesPerSecond()}";
+			_cpuAgents[i] = new AgentDataSphere {
+				Position = new Vector4(pos.X, pos.Y, pos.Z, 0.5f),
+				Target = new Vector4(tgt.X, tgt.Y, tgt.Z, 0.0f),
+				Velocity = new Vector4(0, 0, 0, 8.0f),
+				Color = color
+			};
+		}
 	}
 
-	private void DispatchPhase(uint phase, float delta, int threadCount)
+	private void SetupVisuals()
 	{
-		var stream = new System.IO.MemoryStream();
-		var writer = new System.IO.BinaryWriter(stream);
+		if (_visualizer == null)
+		{
+			_visualizer = GetNodeOrNull<MultiMeshInstance3D>("AgentVisualizer");
+			if (_visualizer == null) {
+				_visualizer = new MultiMeshInstance3D { Name = "AgentVisualizer" };
+				AddChild(_visualizer);
+			}
+		}
 		
-		writer.Write((float)delta);
-		writer.Write((float)Time.GetTicksMsec() / 1000.0f);
-		writer.Write((float)PlanetRadius);
-		writer.Write((float)NoiseScale);
-		writer.Write((float)NoiseHeight);
-		writer.Write((uint)AgentCount);
-		writer.Write((uint)phase);
-		writer.Write((uint)GRID_SIZE);
-		writer.Write((uint)DATA_TEX_WIDTH);             // Offset 32 (Termina en 36)
+		_visualizer.Visible = true;
+		_visualizer.Multimesh = new MultiMesh
+		{
+			TransformFormat = MultiMesh.TransformFormatEnum.Transform3D,
+			UseColors = false,
+			InstanceCount = AgentCount,
+			Mesh = new QuadMesh { 
+				Size = new Vector2(1.0f, 1.0f), 
+				Material = new ShaderMaterial { Shader = GD.Load<Shader>("res://Shaders/Visual/SphereImpostor.gdshader") } 
+			}
+		};
+
+		_visualizer.Multimesh.CustomAabb = new Aabb(new Vector3(-2000, -2000, -2000), new Vector3(4000, 4000, 4000));
+
+		var agentMat = _visualizer.Multimesh.Mesh.SurfaceGetMaterial(0) as ShaderMaterial;
+		if (agentMat != null) {
+			agentMat.SetShaderParameter("agent_pos_texture", _posTextureRef);
+			agentMat.SetShaderParameter("agent_color_texture", _colorTextureRef);
+			agentMat.SetShaderParameter("tex_width", DATA_TEX_WIDTH);
+		}
 		
-		// --- CORRECCIÓN: PADDING (Relleno) ---
-		// El error pide 48 bytes. Tenemos 36. Faltan 12 bytes.
-		// Escribimos 3 ceros (uint/float = 4 bytes c/u) extra.
-		writer.Write((uint)0); // Padding 1 (+4 = 40)
-		writer.Write((uint)0); // Padding 2 (+4 = 44)
-		writer.Write((uint)0); // Padding 3 (+4 = 48) -> ¡BINGO!		
-		byte[] pushBytes = stream.ToArray();
-		
-		var computeList = _rd.ComputeListBegin();
-		_rd.ComputeListBindComputePipeline(computeList, _pipelineRid);
-		_rd.ComputeListBindUniformSet(computeList, _uniformSetRid, 0);
-		_rd.ComputeListSetPushConstant(computeList, pushBytes, (uint)pushBytes.Length);
-		
-		uint groups = (uint)Mathf.CeilToInt(threadCount / 64.0f);
-		_rd.ComputeListDispatch(computeList, groups, 1, 1);
-		_rd.ComputeListEnd();
+		if (PlanetRenderer != null && _bakedCubemapRid.IsValid) {
+			PlanetRenderer.Initialize(_bakedCubemapRid, _vectorFieldRid, PlanetRadius, NoiseHeight);
+		}
 	}
 
-	private void SetupMarkers()
-	{
-		CreateMarker(Vector3.Down * (PlanetRadius + 5.0f), Colors.Cyan, "Goal_A_South");
-		CreateMarker(Vector3.Up * (PlanetRadius + 5.0f), Colors.Orange, "Goal_B_North");
-	}
-
-	private void CreateMarker(Vector3 pos, Color color, string name)
-	{
-		var meshInstance = new MeshInstance3D();
-		var boxMesh = new BoxMesh();
-		boxMesh.Size = new Vector3(2, 10, 2); 
-		var mat = new StandardMaterial3D();
-		mat.AlbedoColor = color;
-		mat.EmissionEnabled = true; mat.Emission = color; mat.EmissionEnergyMultiplier = 2.0f;
-		boxMesh.Material = mat;
-		meshInstance.Mesh = boxMesh;
-		meshInstance.Name = name;
-		AddChild(meshInstance);
-		meshInstance.GlobalPosition = pos; // GlobalPosition es más seguro
-		if (pos.LengthSquared() > 0.1f) meshInstance.LookAt(pos * 2.0f, Vector3.Right); 
-	}
-
+	private void SetupMarkers() { /* Opcional: tus marcadores */ }
+	
 	private void SetupUI() {
 		var canvas = new CanvasLayer(); AddChild(canvas);
 		_statsLabel = new Label(); _statsLabel.Position = new Vector2(10, 10);
-		var settings = new LabelSettings();
-		settings.FontSize = 24; settings.OutlineSize = 4; settings.OutlineColor = Colors.Black; // Mejor visibilidad
-		_statsLabel.LabelSettings = settings; canvas.AddChild(_statsLabel);
+		_statsLabel.LabelSettings = new LabelSettings { FontSize = 24, OutlineSize = 4, OutlineColor = Colors.Black };
+		canvas.AddChild(_statsLabel);
 	}
 
 	private byte[] StructureToByteArray(AgentDataSphere[] data) {
