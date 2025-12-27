@@ -69,6 +69,7 @@ script = ExtResource("3_h2yge")
 PlanetRenderer = NodePath("../WorldRenderer")
 ComputeShaderFile = ExtResource("2_1bvp3")
 BakerShaderFile = ExtResource("6_7mycd")
+WaterLevel = 0.1
 
 [node name="AgentVisualizer" type="MultiMeshInstance3D" parent="AgentSimulationSphere"]
 visible = false

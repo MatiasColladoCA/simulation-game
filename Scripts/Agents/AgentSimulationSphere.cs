@@ -21,6 +21,10 @@ public partial class AgentSimulationSphere : Node3D
 	[Export] public float PlanetRadius = 100.0f;
 	[Export] public float NoiseScale = 2.0f;
 	[Export] public float NoiseHeight = 10.0f;
+
+	// NUEVO: Control deslizante para el nivel del agua (0 a 1)
+	[Export(PropertyHint.Range, "0.0, 1.0")] 
+	public float WaterLevel = 0.45f;
 	
 	private MultiMeshInstance3D _visualizer;
 	private RenderingDevice _rd;
@@ -274,8 +278,9 @@ private unsafe void SetupCompute()
 		}
 	}
 
-	private void SetupVisuals()
+		private void SetupVisuals()
 	{
+		// 1. VISUALIZADOR DE AGENTES
 		if (_visualizer == null)
 		{
 			_visualizer = GetNodeOrNull<MultiMeshInstance3D>("AgentVisualizer");
@@ -296,7 +301,6 @@ private unsafe void SetupCompute()
 				Material = new ShaderMaterial { Shader = GD.Load<Shader>("res://Shaders/Visual/SphereImpostor.gdshader") } 
 			}
 		};
-
 		_visualizer.Multimesh.CustomAabb = new Aabb(new Vector3(-2000, -2000, -2000), new Vector3(4000, 4000, 4000));
 
 		var agentMat = _visualizer.Multimesh.Mesh.SurfaceGetMaterial(0) as ShaderMaterial;
@@ -306,10 +310,40 @@ private unsafe void SetupCompute()
 			agentMat.SetShaderParameter("tex_width", DATA_TEX_WIDTH);
 		}
 		
+		// 2. INICIALIZAR PLANETA (LIMPIO)
+		// Eliminamos el bloque sucio. Ahora solo pasamos WaterLevel como 5to argumento.
+		// PlanetRender se encarga de pasárselo al shader internamente.
 		if (PlanetRenderer != null && _bakedCubemapRid.IsValid) {
-			PlanetRenderer.Initialize(_bakedCubemapRid, _vectorFieldRid, PlanetRadius, NoiseHeight);
+			PlanetRenderer.Initialize(_bakedCubemapRid, _vectorFieldRid, PlanetRadius, NoiseHeight, WaterLevel);
 		}
+
+		// 3. ESFERA DE AGUA (VISUAL)
+		var waterNode = GetNodeOrNull<MeshInstance3D>("WaterSphere");
+		if (waterNode == null) {
+			waterNode = new MeshInstance3D { Name = "WaterSphere" };
+			AddChild(waterNode);
+		}
+
+		// El radio visual del agua depende del nivel
+		float waterRadius = PlanetRadius + (NoiseHeight * WaterLevel); 
+		
+		waterNode.Mesh = new SphereMesh { 
+			Radius = waterRadius, 
+			Height = waterRadius * 2.0f 
+		};
+
+		var waterMat = new StandardMaterial3D();
+		waterMat.Transparency = BaseMaterial3D.TransparencyEnum.Alpha;
+		waterMat.AlbedoColor = new Color(0.0f, 0.2f, 0.8f, 0.6f); 
+		waterMat.Roughness = 0.1f; 
+		waterMat.Metallic = 0.5f;  
+		waterMat.EmissionEnabled = true;
+		waterMat.Emission = new Color(0.0f, 0.1f, 0.3f); 
+		waterMat.EmissionEnergyMultiplier = 0.5f;
+		
+		waterNode.MaterialOverride = waterMat;
 	}
+
 
 	private void SetupMarkers() { /* Opcional: tus marcadores */ }
 	

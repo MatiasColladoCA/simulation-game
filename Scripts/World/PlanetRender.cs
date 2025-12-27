@@ -12,32 +12,43 @@ public partial class PlanetRender : Node3D
 	private ShaderMaterial _materialOverride;
 
 	// Método llamado por AgentSimulationSphere (el Orquestador)
-	public void Initialize(Rid heightMapRid, Rid vectorMapRid, float radius, float heightMultiplier)
+// Método llamado por AgentSimulationSphere (el Orquestador)
+	// AÑADIDO: argumento 'waterLevel'
+	public void Initialize(Rid heightMapRid, Rid vectorMapRid, float radius, float heightMultiplier, float waterLevel)
 	{
 		// 1. Asegurar Material
 		if (_materialOverride == null)
 		{
-			// Cargamos el shader visual que creamos antes
 			var shader = GD.Load<Shader>("res://Shaders/Visual/planet_terrain.gdshader");
 			_materialOverride = new ShaderMaterial();
 			_materialOverride.Shader = shader;
 		}
 
-		// 2. Inyectar Texturas (Zero-Copy)
-		// Usamos la API de TextureCubemapRD para conectar el RID de Vulkan con el Shader de Godot
+		// 2. Inyectar Texturas
 		var hMap = new TextureCubemapRD { TextureRdRid = heightMapRid };
 		
-		// Asignamos parámetros al shader
 		_materialOverride.SetShaderParameter("height_map_gpu", hMap);
 		_materialOverride.SetShaderParameter("planet_radius", radius);
 		_materialOverride.SetShaderParameter("noise_amplitude", heightMultiplier);
+		
+		// --- NUEVO: Pasamos el nivel del agua al shader ---
+		_materialOverride.SetShaderParameter("water_level_norm", waterLevel);
 
 		// 3. Generar la Geometría Física (Solo si no existe)
+		// Nota: Si cambias el radio en tiempo real, deberías destruir y recrear la malla, 
+		// pero por ahora está bien así.
 		if (_meshInstance == null)
 		{
 			GenerateCubeSphere(radius);
 		}
+		else 
+		{
+			// Si ya existe, aseguramos que tenga el material actualizado
+			_meshInstance.MaterialOverride = _materialOverride;
+		}
 	}
+
+
 
 	private void GenerateCubeSphere(float radius)
 	{
