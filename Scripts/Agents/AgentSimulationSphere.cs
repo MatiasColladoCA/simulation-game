@@ -14,7 +14,7 @@ public struct AgentDataSphere
 public partial class AgentSimulationSphere : Node3D
 {
 	[Export] public PlanetRender PlanetRenderer;
-	[Export] public int AgentCount = 1000; 
+	[Export] public int AgentCount = 5000; 
 	[Export] public RDShaderFile ComputeShaderFile;
 	[Export] public RDShaderFile BakerShaderFile;
 	
@@ -41,8 +41,11 @@ public partial class AgentSimulationSphere : Node3D
 	private AgentDataSphere[] _cpuAgents; 
 	private Label _statsLabel;
 	
+	// NUEVO: Variable dinámica
+	private int _cubemapSize;
+	
 	// --- CONSTANTES ---
-	private const int CUBEMAP_SIZE = 1024; 
+	// private const int CUBEMAP_SIZE = 1024; 
 	private const int DATA_TEX_WIDTH = 2048; 
 	
 	// Grilla de Densidad (64x64x64)
@@ -51,23 +54,45 @@ public partial class AgentSimulationSphere : Node3D
 
 	private byte[] _pushConstantBuffer = new byte[48]; 
 
-	public override void _Ready()
+	public override async void _Ready()
 	{
+		// 1. Configuración Básica (CPU barata)
 		_rd = RenderingServer.GetRenderingDevice();
 		SetupUI();
 		
-		// 1. Hornear Terreno (Es vital que esto ocurra antes de SetupCompute)
-		if (BakerShaderFile != null) BakeTerrain();
-		else GD.PrintErr("Falta BakerShaderFile");
+		// Configuración dinámica de resolución (Conservadora)
+		_cubemapSize = Mathf.Clamp((int)(PlanetRadius * 10.0f), 512, 1024);
+
+		// 2. TAREA PESADA 1: Hornear Terreno
+		if (BakerShaderFile != null) 
+		{
+			BakeTerrain();
+			// Esperamos 2 frames para asegurar que la GPU termine el Bake 
+			// antes de que nadie intente leer la textura.
+			await ToSignal(GetTree(), "process_frame");
+			await ToSignal(GetTree(), "process_frame");
+		}
 		
-		// 2. Inicializar Datos y Compute
+		// 3. TAREA PESADA 2: Reservar memoria para 100k agentes
+		// (Esto sube muchos buffers a la VRAM)
 		SetupData();
 		SetupCompute();
 		
-		// 3. Inicializar Visuales
+		// Esperamos otro frame para no saturar el bus PCI-E
+		await ToSignal(GetTree(), "process_frame");
+
+		// 4. TAREA PESADA 3: Generar Visuales y Quadtree
+		// Aquí se dispara la creación de meshes
 		SetupVisuals(); 
-		SetupMarkers();
+		
+		// Inicializar cámara
+		var cam = GetViewport().GetCamera3D() as OrbitalCamera;
+		if (cam != null) cam.Initialize(PlanetRadius);
+		
+		GD.Print("Simulation Ready & Staggered Loaded.");
 	}
+
+
 
 public override void _Process(double delta)
 	{
@@ -199,16 +224,16 @@ private unsafe void SetupCompute()
 
 	private void BakeTerrain()
 	{
-		// 1. Texturas
+		// 1. Texturas (Con tamaño dinámico _cubemapSize)
 		var fmtHeight = new RDTextureFormat {
-			Width = (uint)CUBEMAP_SIZE, Height = (uint)CUBEMAP_SIZE, Depth = 1, ArrayLayers = 6,
+			Width = (uint)_cubemapSize, Height = (uint)_cubemapSize, Depth = 1, ArrayLayers = 6,
 			TextureType = RenderingDevice.TextureType.Cube, Format = RenderingDevice.DataFormat.R32Sfloat,
 			UsageBits = RenderingDevice.TextureUsageBits.StorageBit | RenderingDevice.TextureUsageBits.SamplingBit | RenderingDevice.TextureUsageBits.CanCopyFromBit
 		};
 		_bakedCubemapRid = _rd.TextureCreate(fmtHeight, new RDTextureView(), new Godot.Collections.Array<byte[]>());
 
 		var fmtVectors = new RDTextureFormat {
-			Width = (uint)CUBEMAP_SIZE, Height = (uint)CUBEMAP_SIZE, Depth = 1, ArrayLayers = 6,
+			Width = (uint)_cubemapSize, Height = (uint)_cubemapSize, Depth = 1, ArrayLayers = 6,
 			TextureType = RenderingDevice.TextureType.Cube, Format = RenderingDevice.DataFormat.R16G16B16A16Sfloat,
 			UsageBits = RenderingDevice.TextureUsageBits.StorageBit | RenderingDevice.TextureUsageBits.SamplingBit | RenderingDevice.TextureUsageBits.CanCopyFromBit
 		};
@@ -224,26 +249,34 @@ private unsafe void SetupCompute()
 		var uOutVectors = new RDUniform { UniformType = RenderingDevice.UniformType.Image, Binding = 1 }; uOutVectors.AddId(_vectorFieldRid);
 		var bakerSet = _rd.UniformSetCreate(new Godot.Collections.Array<RDUniform> { uOutHeight, uOutVectors }, bakerShaderRid, 0);
 
-		// 4. Dispatch (Manual MemoryStream para el baker)
+		// 4. Push Constants & Dispatch
 		var stream = new System.IO.MemoryStream();
 		var writer = new System.IO.BinaryWriter(stream);
 		writer.Write((float)PlanetRadius);
 		writer.Write((float)NoiseScale);
 		writer.Write((float)NoiseHeight);
-		writer.Write((uint)CUBEMAP_SIZE);
-		byte[] pushBytes = stream.ToArray();
+		writer.Write((uint)_cubemapSize); 
 		
+		byte[] pushBytes = stream.ToArray();
+
 		var computeList = _rd.ComputeListBegin();
 		_rd.ComputeListBindComputePipeline(computeList, bakerPipeline);
 		_rd.ComputeListBindUniformSet(computeList, bakerSet, 0);
 		_rd.ComputeListSetPushConstant(computeList, pushBytes, (uint)pushBytes.Length);
 		
-		uint groups = (uint)Mathf.CeilToInt(CUBEMAP_SIZE / 32.0f);
+		uint groups = (uint)Mathf.CeilToInt(_cubemapSize / 32.0f);
 		_rd.ComputeListDispatch(computeList, groups, groups, 6);
-		_rd.ComputeListEnd();
+		_rd.ComputeListEnd(); 
 		
-		_rd.FreeRid(bakerPipeline); _rd.FreeRid(bakerShaderRid); _rd.FreeRid(bakerSet);
-		GD.Print("Terrain Baked.");
+		// SINCRONIZACIÓN ELIMINADA (Submit/Sync manual causan error en Main RD).
+		// La espera se maneja ahora en el '_Ready' con 'await process_frame'.
+
+		// Limpieza de recursos del pipeline (seguro porque los comandos ya están en cola)
+		_rd.FreeRid(bakerPipeline); 
+		_rd.FreeRid(bakerShaderRid); 
+		_rd.FreeRid(bakerSet);
+		
+		GD.Print($"Terrain Baked at resolution {_cubemapSize}x{_cubemapSize} (Async Queued)");
 	}
 
 	private void SetupData()
@@ -278,7 +311,7 @@ private unsafe void SetupCompute()
 		}
 	}
 
-		private void SetupVisuals()
+	private void SetupVisuals()
 	{
 		// 1. VISUALIZADOR DE AGENTES
 		if (_visualizer == null)
@@ -311,12 +344,11 @@ private unsafe void SetupCompute()
 		}
 		
 		// 2. INICIALIZAR PLANETA (DELEGACIÓN)
+		// Ya no pasamos WaterLevel porque PlanetRenderer tiene autoridad sobre él.
 		if (PlanetRenderer != null && _bakedCubemapRid.IsValid) {
-			// Nota: Ya no pasamos WaterLevel. PlanetRenderer usa el suyo propio.
 			PlanetRenderer.Initialize(_bakedCubemapRid, _vectorFieldRid, PlanetRadius, NoiseHeight);
 		}
 	}
-
 
 	private void SetupMarkers() { /* Opcional: tus marcadores */ }
 	
@@ -331,5 +363,35 @@ private unsafe void SetupCompute()
 		int size = Marshal.SizeOf<AgentDataSphere>(); byte[] arr = new byte[size * data.Length];
 		GCHandle handle = GCHandle.Alloc(data, GCHandleType.Pinned);
 		try { Marshal.Copy(handle.AddrOfPinnedObject(), arr, 0, arr.Length); } finally { handle.Free(); } return arr;
+	}
+
+
+	// Método automático de Godot cuando el nodo va a morir (Cerrar juego/Cambiar escena)
+	public override void _ExitTree()
+	{
+		if (_rd == null) return; // Si el RD murió, no hacemos nada
+
+		// Función auxiliar local para liberar con seguridad
+		void SafeFree(Rid rid)
+		{
+			if (rid.IsValid && rid.Id != 0) 
+			{
+				try { _rd.FreeRid(rid); } 
+				catch { /* Ignorar errores de doble liberación */ }
+			}
+		}
+
+		SafeFree(_bakedCubemapRid);
+		SafeFree(_vectorFieldRid);
+		SafeFree(_bufferRid);
+		SafeFree(_gridBufferRid);
+		SafeFree(_posTextureRid);
+		SafeFree(_colorTextureRid);
+		
+		// Shader y Pipeline suelen dar problemas si se liberan en desorden,
+		// a veces es mejor dejar que Godot limpie el contexto si hay crash.
+		// Pero intentamos:
+		SafeFree(_shaderRid);
+		// SafeFree(_pipelineRid); // A veces liberar el pipeline explícitamente causa error si el shader ya murió
 	}
 }

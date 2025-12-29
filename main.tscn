@@ -27,7 +27,7 @@ reflected_light_source = 2
 
 [node name="WorldRenderer" type="Node3D" parent="."]
 script = ExtResource("1_lquwl")
-WaterLevel = 0.12
+WaterLevel = 0.0
 
 [node name="PlanetMeshVisual" type="MeshInstance3D" parent="WorldRenderer"]
 

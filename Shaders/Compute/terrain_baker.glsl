@@ -6,7 +6,7 @@ layout(local_size_x = 32, local_size_y = 32, local_size_z = 1) in;
 // Salida 0: Altura (R)
 layout(set = 0, binding = 0, r32f) writeonly uniform imageCube height_map;
 
-// Salida 1: Campo Vectorial (RGB = Dirección, A = Fuerza)
+// Salida 1: Campo Vectorial
 layout(set = 0, binding = 1, rgba16f) writeonly uniform imageCube vector_field;
 
 layout(push_constant) uniform Params {
@@ -16,7 +16,7 @@ layout(push_constant) uniform Params {
     uint resolution;
 } params;
 
-// --- RUIDO (Simplex 3D barato) ---
+// --- UTILIDADES DE RUIDO (Simplex 3D) ---
 vec3 mod289(vec3 x) { return x - floor(x * (1.0 / 289.0)) * 289.0; }
 vec4 mod289(vec4 x) { return x - floor(x * (1.0 / 289.0)) * 289.0; }
 vec4 permute(vec4 x) { return mod289(((x*34.0)+1.0)*x); }
@@ -65,40 +65,83 @@ float snoise(vec3 v) {
   return 42.0 * dot( m*m, vec4( dot(p0,x0), dot(p1,x1), dot(p2,x2), dot(p3,x3) ) );
 }
 
-// --- FBM para Altura ---
-float fbm(vec3 x) {
+// --- GENERACIÓN AAA: HYBRID MULTIFRACTAL ---
+
+// 1. Ruido Base (FBM Suave) - Para continentes y llanuras
+float fbm_soft(vec3 x, int octaves) {
     float v = 0.0; float a = 0.5; vec3 shift = vec3(100.0);
-    for (int i = 0; i < 5; ++i) { v += a * snoise(x); x = x * 2.0 + shift; a *= 0.5; }
+    float freq = 1.0;
+    for (int i = 0; i < octaves; ++i) {
+        v += a * snoise(x * freq);
+        x += shift; 
+        a *= 0.5;
+        freq *= 2.0;
+    }
     return v;
 }
 
-// --- CURL NOISE (Vectores de fluido) ---
-// Calcula el rotacional del campo de ruido potencial
-vec3 curl_noise(vec3 p) {
-    const float e = 0.01; // epsilon para derivadas
+// 2. Ruido Ridged (Picos) - Para cadenas montañosas afiladas
+float ridged_noise(vec3 x, int octaves) {
+    float v = 0.0; float a = 1.0; float freq = 1.0;
+    float prev_n = 1.0;
+    for (int i = 0; i < octaves; ++i) {
+        float n = snoise(x * freq);
+        n = 1.0 - abs(n);   // Invierte los valles -> Picos
+        n = n * n;          // Afila los picos (potencia)
+        v += n * a * prev_n; // Escalar por la capa anterior (hace que montañas solo salgan sobre montañas)
+        prev_n = n;
+        a *= 0.5;
+        freq *= 2.0;
+    }
+    return v;
+}
+
+// 3. Domain Warping (Deforma el espacio para que no parezca ruido digital)
+vec3 warp(vec3 p) {
+    float q = fbm_soft(p * 0.5, 2);
+    return p + q * 0.3; // Distorsión moderada
+}
+
+// --- FUNCIÓN MAESTRA DE TERRENO ---
+float get_terrain_aaa(vec3 p) {
+    // A. Domain Warping: Rompe la regularidad
+    vec3 warped_p = warp(p * params.noise_scale);
+
+    // B. Forma Continental (Baja Frecuencia)
+    // Usamos menos octavas porque queremos formas grandes
+    float continental = fbm_soft(warped_p * 0.5, 3);
     
-    // Calculamos derivadas parciales del ruido (cambio en x, y, z)
-    float n1 = snoise(p + vec3(0, e, 0)); 
-    float n2 = snoise(p - vec3(0, e, 0)); 
-    float n3 = snoise(p + vec3(0, 0, e)); 
-    float n4 = snoise(p - vec3(0, 0, e)); 
-    float n5 = snoise(p + vec3(e, 0, 0)); 
-    float n6 = snoise(p - vec3(e, 0, 0));
+    // Ajustar el nivel del mar: empujamos valores bajos hacia abajo
+    // Esto crea llanuras oceánicas grandes
+    float base_height = continental; 
 
-    float x = n1 - n2;
-    float y = n3 - n4;
-    float z = n5 - n6;
+    // C. Montañas (Alta Frecuencia)
+    float mountains = ridged_noise(warped_p * 1.5, 4);
 
-    // Curl = (Gradiente del ruido) x (Vector unitario o normal)
-    // Aproximación simple de curl noise 3D:
+    // D. Mezcla Inteligente (Biome Masking)
+    // Solo ponemos montañas si estamos en "Tierra firme" (continental > 0.1)
+    float mountain_mask = smoothstep(0.0, 0.4, continental);
+    
+    // Altura final = Continente + (Montañas * Mascara)
+    // El 0.6 es para controlar qué tan altas son las montañas respecto al continente
+    return base_height + (mountains * mountain_mask * 0.6);
+}
+
+// --- CURL NOISE PARA VIENTO (IGUAL QUE ANTES) ---
+vec3 curl_noise(vec3 p) {
+    const float e = 0.01;
+    float n1 = snoise(p + vec3(0, e, 0)); float n2 = snoise(p - vec3(0, e, 0));
+    float n3 = snoise(p + vec3(0, 0, e)); float n4 = snoise(p - vec3(0, 0, e));
+    float n5 = snoise(p + vec3(e, 0, 0)); float n6 = snoise(p - vec3(e, 0, 0));
+    float x = n1 - n2; float y = n3 - n4; float z = n5 - n6;
     return normalize(vec3(y - z, z - x, x - y)); 
 }
 
 vec3 get_direction(uvec3 id, float size) {
     vec2 uv = (vec2(id.xy) + 0.5) / size;
     uv = uv * 2.0 - 1.0;
-    vec3 dir;
     uint face = id.z;
+    vec3 dir;
     if (face == 0) dir = vec3(1.0, -uv.y, -uv.x);
     else if (face == 1) dir = vec3(-1.0, -uv.y, uv.x);
     else if (face == 2) dir = vec3(uv.x, 1.0, uv.y);
@@ -114,19 +157,18 @@ void main() {
 
     vec3 dir = get_direction(id, float(params.resolution));
 
-    // 1. ESCRIBIR ALTURA (Como antes)
-    float n = fbm(dir * params.noise_scale);
+    // 1. GENERAR ALTURA AAA
+    float n = get_terrain_aaa(dir);
+    
+    // Normalización de seguridad para que el shader visual no se rompa
+    // ridged_noise agrega mucho valor, así que a veces hay que bajarle el tono
+    // Pero lo dejaremos raw para que el parámetro "Noise Height" de C# controle la escala final.
     imageStore(height_map, ivec3(id), vec4(n, 0.0, 0.0, 1.0));
 
-    // 2. ESCRIBIR VECTOR FIELD (Nuevo)
-    // Usamos una escala diferente para el viento (más suave)
-    vec3 flow = curl_noise(dir * (params.noise_scale * 0.5));
-    
-    // Proyectar el flujo sobre la superficie de la esfera para que sea tangente
-    // (El viento sopla paralelo al suelo, no hacia el espacio)
-    vec3 normal = dir; // En una esfera, la normal es la dirección desde el centro
+    // 2. GENERAR VIENTO
+    vec3 flow = curl_noise(dir * params.noise_scale);
+    vec3 normal = dir;
     flow = flow - dot(flow, normal) * normal; 
     flow = normalize(flow);
-
-    imageStore(vector_field, ivec3(id), vec4(flow, 1.0)); // Alpha 1.0 = Fuerza máxima
+    imageStore(vector_field, ivec3(id), vec4(flow, 1.0));
 }

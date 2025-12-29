@@ -1,162 +1,156 @@
 using Godot;
+using System.Collections.Generic;
 
 public partial class PlanetRender : Node3D
 {
-	[Export] public int BaseResolution = 256;
-	
-	// AHORA ESTO VIVE AQUÍ (Autoridad del Entorno)
-	[Export(PropertyHint.Range, "0.0, 1.0")] 
-	public float WaterLevel = 0.45f; 
+	// LOD Settings
+	[Export] public int PatchResolution = 16; // Resolución de cada parche (16x16 o 32x32)
+	[Export(PropertyHint.Range, "0.0, 1.0")] public float WaterLevel = 0.45f; 
 
-	private MeshInstance3D _terrainMesh;
-	private MeshInstance3D _waterMesh; // Referencia a la esfera de agua
+	private Mesh _patchMesh; // Malla base reutilizable
 	private ShaderMaterial _terrainMaterial;
+	private PlanetChunk[] _rootChunks; // Las 6 caras del cubo
+	private MeshInstance3D _waterMesh;
 
-	// Variables de estado del mundo (para que otros las lean si hace falta)
-	public float CurrentRadius { get; private set; }
-	public float CurrentNoiseHeight { get; private set; }
+	// Estado
+	private float _currentRadius;
+	private float _currentNoiseHeight;
+	private float _lastWaterLevel = -1;
 
 	public void Initialize(Rid heightMapRid, Rid vectorMapRid, float radius, float heightMultiplier)
 	{
-		CurrentRadius = radius;
-		CurrentNoiseHeight = heightMultiplier;
+		_currentRadius = radius;
+		_currentNoiseHeight = heightMultiplier;
 
-		// 1. Configurar Material Terreno
+		// 1. Configurar Material
 		if (_terrainMaterial == null)
 		{
-			var shader = GD.Load<Shader>("res://Shaders/Visual/planet_terrain.gdshader");
 			_terrainMaterial = new ShaderMaterial();
-			_terrainMaterial.Shader = shader;
+			_terrainMaterial.Shader = GD.Load<Shader>("res://Shaders/Visual/planet_terrain.gdshader");
 		}
-
+		
+		// Uniforms Globales
 		var hMap = new TextureCubemapRD { TextureRdRid = heightMapRid };
 		_terrainMaterial.SetShaderParameter("height_map_gpu", hMap);
 		_terrainMaterial.SetShaderParameter("planet_radius", radius);
 		_terrainMaterial.SetShaderParameter("noise_amplitude", heightMultiplier);
-		
-		// Usamos NUESTRA variable WaterLevel
 		_terrainMaterial.SetShaderParameter("water_level_norm", WaterLevel);
 
-		// 2. Generar Terreno (Si no existe)
-		if (_terrainMesh == null)
-		{
-			GenerateCubeSphere(radius);
-		}
-		else 
-		{
-			_terrainMesh.MaterialOverride = _terrainMaterial;
-		}
+		// 2. Generar Mesh Base (Una sola vez)
+		if (_patchMesh == null) GeneratePatchMesh();
 
-		// 3. GENERAR/ACTUALIZAR AGUA (Lógica movida aquí)
-		UpdateWaterSphere();
+		// 3. Inicializar Sistema Quadtree
+		InitializeQuadtree(radius);
+
+		// 4. Agua
+		UpdateWaterVisuals(true);
 	}
 
-	// Método para ser llamado si cambias el slider en tiempo real desde el editor
-	public override void _Process(double delta)
+	private void GeneratePatchMesh()
 	{
-		// En modo editor o debug, actualizamos el shader si el slider cambia
-		if (_terrainMaterial != null)
-		{
-			 _terrainMaterial.SetShaderParameter("water_level_norm", WaterLevel);
-		}
-		
-		// Actualizar geometría del agua si cambia el nivel
-		if (_waterMesh != null)
-		{
-			 float waterRadius = CurrentRadius + (CurrentNoiseHeight * WaterLevel);
-			 if (_waterMesh.Mesh is SphereMesh sphere && Mathf.Abs(sphere.Radius - waterRadius) > 0.01f)
-			 {
-				 sphere.Radius = waterRadius;
-				 sphere.Height = waterRadius * 2.0f;
-			 }
-		}
-	}
-
-	private void UpdateWaterSphere()
-	{
-		if (_waterMesh == null)
-		{
-			_waterMesh = new MeshInstance3D { Name = "WaterSphere" };
-			AddChild(_waterMesh);
-
-			// Material de agua
-			var waterMat = new StandardMaterial3D();
-			waterMat.Transparency = BaseMaterial3D.TransparencyEnum.Alpha;
-			waterMat.AlbedoColor = new Color(0.0f, 0.2f, 0.8f, 0.6f); 
-			waterMat.Roughness = 0.1f; 
-			waterMat.Metallic = 0.5f;  
-			waterMat.EmissionEnabled = true;
-			waterMat.Emission = new Color(0.0f, 0.1f, 0.3f); 
-			waterMat.EmissionEnergyMultiplier = 0.5f;
-			_waterMesh.MaterialOverride = waterMat;
-		}
-
-		float waterRadius = CurrentRadius + (CurrentNoiseHeight * WaterLevel);
-		_waterMesh.Mesh = new SphereMesh { Radius = waterRadius, Height = waterRadius * 2.0f };
-	}
-
-
-
-	private void GenerateCubeSphere(float radius)
-	{
+		// Crea un plano simple XY de 1x1 subdividido
 		var st = new SurfaceTool();
 		st.Begin(Mesh.PrimitiveType.Triangles);
-
-		// Vectores y lógica matemática (EXACTAMENTE IGUAL QUE ANTES)
-		Vector3[] directions = { Vector3.Up, Vector3.Down, Vector3.Left, Vector3.Right, Vector3.Forward, Vector3.Back };
-		Vector3[] axisA = { Vector3.Right, Vector3.Right, Vector3.Forward, Vector3.Back, Vector3.Right, Vector3.Left };
-		Vector3[] axisB = { Vector3.Back, Vector3.Forward, Vector3.Up, Vector3.Up, Vector3.Up, Vector3.Up };
-
-		for (int i = 0; i < 6; i++)
+		
+		int res = PatchResolution;
+		float step = 1.0f / res;
+		
+		for (int y = 0; y <= res; y++)
 		{
-			Vector3 localUp = directions[i];
-			Vector3 localRight = axisA[i];
-			Vector3 localBottom = axisB[i];
-
-			for (int y = 0; y < BaseResolution; y++)
+			for (int x = 0; x <= res; x++)
 			{
-				for (int x = 0; x < BaseResolution; x++)
-				{
-					Vector3 p1 = ComputeSpherePoint(x, y, localUp, localRight, localBottom);
-					Vector3 p2 = ComputeSpherePoint(x + 1, y, localUp, localRight, localBottom);
-					Vector3 p3 = ComputeSpherePoint(x, y + 1, localUp, localRight, localBottom);
-					Vector3 p4 = ComputeSpherePoint(x + 1, y + 1, localUp, localRight, localBottom);
-
-					st.SetNormal(p1); st.SetUV(new Vector2(0, 0)); st.AddVertex(p1 * radius);
-					st.SetNormal(p2); st.SetUV(new Vector2(1, 0)); st.AddVertex(p2 * radius);
-					st.SetNormal(p3); st.SetUV(new Vector2(0, 1)); st.AddVertex(p3 * radius);
-					st.SetNormal(p2); st.SetUV(new Vector2(1, 0)); st.AddVertex(p2 * radius);
-					st.SetNormal(p4); st.SetUV(new Vector2(1, 1)); st.AddVertex(p4 * radius);
-					st.SetNormal(p3); st.SetUV(new Vector2(0, 1)); st.AddVertex(p3 * radius);
-				}
+				st.SetUV(new Vector2(x * step, y * step));
+				// Vértice plano en rango 0..1 (se ajustará en shader)
+				st.AddVertex(new Vector3(x * step - 0.5f, y * step - 0.5f, 0));
 			}
 		}
 
-		st.Index();
-		st.GenerateNormals(); 
-		st.GenerateTangents();
-		var mesh = st.Commit();
-
-		// --- AQUÍ ESTÁ EL CAMBIO ---
-		// Usamos '_terrainMesh' en lugar de '_meshInstance'
-		// Usamos '_terrainMaterial' en lugar de '_materialOverride'
+		// Indices
+		for (int y = 0; y < res; y++)
+		{
+			for (int x = 0; x < res; x++)
+			{
+				int i = y * (res + 1) + x;
+				st.AddIndex(i);
+				st.AddIndex(i + 1);
+				st.AddIndex(i + res + 1);
+				
+				st.AddIndex(i + 1);
+				st.AddIndex(i + res + 2);
+				st.AddIndex(i + res + 1);
+			}
+		}
 		
-		_terrainMesh = new MeshInstance3D();
-		_terrainMesh.Name = "ProceduralPlanet";
-		_terrainMesh.Mesh = mesh;
-		_terrainMesh.MaterialOverride = _terrainMaterial; 
-		
-		_terrainMesh.CastShadow = GeometryInstance3D.ShadowCastingSetting.On;
-		
-		AddChild(_terrainMesh);
+		_patchMesh = st.Commit();
 	}
 
-
-
-	private Vector3 ComputeSpherePoint(int x, int y, Vector3 up, Vector3 axisA, Vector3 axisB)
+	private void InitializeQuadtree(float radius)
 	{
-		Vector2 pct = new Vector2(x, y) / (float)BaseResolution;
-		Vector3 pointOnCube = up + (pct.X - 0.5f) * 2.0f * axisA + (pct.Y - 0.5f) * 2.0f * axisB;
-		return pointOnCube.Normalized(); 
+		// Limpiar árbol anterior si existe
+		if (_rootChunks != null)
+		{
+			foreach (var c in _rootChunks) c.FreeRecursively();
+		}
+
+		// Configurar estáticos de la clase Chunk
+		PlanetChunk.BaseMesh = _patchMesh;
+		PlanetChunk.ChunkMaterial = _terrainMaterial;
+		PlanetChunk.Radius = radius;
+		PlanetChunk.RootNode = this;
+
+		// Crear las 6 caras raíz
+		_rootChunks = new PlanetChunk[6];
+		Vector3[] dirs = { Vector3.Up, Vector3.Down, Vector3.Left, Vector3.Right, Vector3.Forward, Vector3.Back };
+		Vector3[] axA = { Vector3.Right, Vector3.Right, Vector3.Forward, Vector3.Back, Vector3.Right, Vector3.Left };
+		Vector3[] axB = { Vector3.Back, Vector3.Forward, Vector3.Up, Vector3.Up, Vector3.Up, Vector3.Up };
+
+		for (int i = 0; i < 6; i++)
+		{
+			_rootChunks[i] = new PlanetChunk(null, dirs[i], axA[i], axB[i], 2.0f, 0);
+		}
+	}
+
+	public override void _Process(double delta)
+	{
+		// Actualizar Agua (Dirty flag)
+		if (!Mathf.IsEqualApprox(WaterLevel, _lastWaterLevel)) UpdateWaterVisuals(false);
+
+		// --- ACTUALIZACIÓN DE QUADTREE ---
+		if (_rootChunks == null) return;
+
+		// 1. Obtener cámara
+		var cam = GetViewport().GetCamera3D();
+		if (cam == null) return;
+
+		// 2. Pasar datos al sistema de chunks
+		PlanetChunk.CameraPos = cam.GlobalPosition;
+
+		// 3. Actualizar árbol (Split/Merge)
+		foreach (var chunk in _rootChunks) chunk.Update();
+	}
+
+	private void UpdateWaterVisuals(bool force)
+	{
+		_lastWaterLevel = WaterLevel;
+		if (_terrainMaterial != null) _terrainMaterial.SetShaderParameter("water_level_norm", WaterLevel);
+
+		float r = _currentRadius + (_currentNoiseHeight * WaterLevel);
+		
+		if (_waterMesh == null) {
+			_waterMesh = new MeshInstance3D { Name = "WaterSphere" };
+			AddChild(_waterMesh);
+			var mat = new StandardMaterial3D();
+			mat.Transparency = BaseMaterial3D.TransparencyEnum.Alpha;
+			mat.AlbedoColor = new Color(0.0f, 0.2f, 0.8f, 0.6f);
+			mat.Roughness = 0.1f; mat.Metallic = 0.5f;
+			mat.EmissionEnabled = true; mat.Emission = new Color(0.0f, 0.1f, 0.3f);
+			mat.EmissionEnergyMultiplier = 0.5f;
+			_waterMesh.MaterialOverride = mat;
+			_waterMesh.Mesh = new SphereMesh();
+		}
+
+		if (_waterMesh.Mesh is SphereMesh s) {
+			s.Radius = r; s.Height = r * 2;
+		}
 	}
 }

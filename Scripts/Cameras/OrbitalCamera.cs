@@ -2,33 +2,57 @@ using Godot;
 
 public partial class OrbitalCamera : Camera3D
 {
-	// --- Configuración ---
-	[Export] public float MinDistance = 60.0f;  // No atravesar el suelo (50 radio + 10 margen)
-	[Export] public float MaxDistance = 300.0f; // No perderse en el espacio
-	[Export] public float Sensitivity = 0.005f; // Velocidad de giro
-	[Export] public float ZoomSpeed = 10.0f;    // Velocidad de zoom
-	[Export] public float Smoothness = 10.0f;   // Suavizado (Lerp)
+	// --- Configuración (Multiplicadores Relativos) ---
+	// 1.3 = El radio + 30% de aire
+	[Export] public float MinRadiusMultiplier = 1.3f; 
+	// 5.0 = 5 veces el radio del planeta
+	[Export] public float MaxRadiusMultiplier = 5.0f; 
+	
+	[Export] public float Sensitivity = 0.005f; 
+	[Export] public float Smoothness = 10.0f;    
+
+	// Estas ahora son privadas/internas, se calculan solas
+	private float _minDistance; 
+	private float _maxDistance; 
+	private float _zoomStep; // ZoomSpeed dinámico
 
 	// --- Estado Interno ---
-	private float _targetDistance = 150.0f;
-	private float _currentDistance = 150.0f;
-	
-	// X = Ángulo Horizontal (Yaw), Y = Ángulo Vertical (Pitch)
+	private float _targetDistance;
+	private float _currentDistance;
 	private Vector2 _targetRotation = Vector2.Zero; 
 	private Vector2 _currentRotation = Vector2.Zero;
-	
 	private bool _isDragging = false;
 
+	// Valor por defecto por si no se llama a Initialize (fallback a radio 100)
 	public override void _Ready()
 	{
-		// Inicializar mirando desde una posición cómoda
-		_targetRotation.Y = Mathf.DegToRad(45); // Un poco elevado
+		Initialize(100.0f); 
+	}
+
+	// --- NUEVO MÉTODO DE CONFIGURACIÓN ---
+	public void Initialize(float planetRadius)
+	{
+		// 1. Calcular límites basados en el tamaño del planeta
+		_minDistance = planetRadius * MinRadiusMultiplier;
+		_maxDistance = planetRadius * MaxRadiusMultiplier;
+
+		// 2. Ajustar la velocidad del zoom 
+		// (Si el planeta es gigante, el zoom debe ser más rápido)
+		_zoomStep = planetRadius * 0.1f; 
+
+		// 3. Posición inicial (Un punto medio cómodo, ej: 1.5x)
+		_targetDistance = planetRadius * 1.5f;
+		_currentDistance = _targetDistance;
+
+		// 4. Resetear rotación
+		_targetRotation.Y = Mathf.DegToRad(45);
+		_currentRotation = _targetRotation;
+		
 		UpdateCameraTransform();
 	}
 
 	public override void _UnhandledInput(InputEvent @event)
 	{
-		// 1. ROTACIÓN (Click Derecho + Arrastrar)
 		if (@event is InputEventMouseButton mb)
 		{
 			if (mb.ButtonIndex == MouseButton.Left)
@@ -37,37 +61,40 @@ public partial class OrbitalCamera : Camera3D
 				Input.MouseMode = _isDragging ? Input.MouseModeEnum.Captured : Input.MouseModeEnum.Visible;
 			}
 
-			// 2. ZOOM (Rueda del Ratón)
 			if (mb.Pressed)
 			{
+				// Usamos el _zoomStep dinámico
 				if (mb.ButtonIndex == MouseButton.WheelUp)
-					_targetDistance -= ZoomSpeed;
+					_targetDistance -= _zoomStep;
 				if (mb.ButtonIndex == MouseButton.WheelDown)
-					_targetDistance += ZoomSpeed;
+					_targetDistance += _zoomStep;
 				
-				// Clamp para no chocar ni irse lejos
-				_targetDistance = Mathf.Clamp(_targetDistance, MinDistance, MaxDistance);
+				// Usamos los límites dinámicos
+				_targetDistance = Mathf.Clamp(_targetDistance, _minDistance, _maxDistance);
 			}
 		}
 
-		// Movimiento del ratón
 		if (@event is InputEventMouseMotion mm && _isDragging)
 		{
-			// Invertimos X para que se sienta natural (arrastrar el mundo)
 			_targetRotation.X -= mm.Relative.X * Sensitivity;
 			_targetRotation.Y -= mm.Relative.Y * Sensitivity;
-
-			// Evitar dar la vuelta completa por arriba/abajo (Gimbal Lock)
-			// Limitamos a casi -90 y 90 grados
 			_targetRotation.Y = Mathf.Clamp(_targetRotation.Y, -Mathf.Pi / 2 + 0.1f, Mathf.Pi / 2 - 0.1f);
+		}
+		
+		// TOGGLE WIREFRAME (Tecla P)
+		if (@event is InputEventKey key && key.Pressed && key.Keycode == Key.P)
+		{
+			var vp = GetViewport();
+			if (vp.DebugDraw == Viewport.DebugDrawEnum.Wireframe)
+				vp.DebugDraw = Viewport.DebugDrawEnum.Disabled;
+			else
+				vp.DebugDraw = Viewport.DebugDrawEnum.Wireframe;
 		}
 	}
 
 	public override void _Process(double delta)
 	{
-		// Interpolación (Suavizado)
 		float t = (float)delta * Smoothness;
-		
 		_currentDistance = Mathf.Lerp(_currentDistance, _targetDistance, t);
 		_currentRotation.X = Mathf.Lerp(_currentRotation.X, _targetRotation.X, t);
 		_currentRotation.Y = Mathf.Lerp(_currentRotation.Y, _targetRotation.Y, t);
@@ -77,21 +104,10 @@ public partial class OrbitalCamera : Camera3D
 
 	private void UpdateCameraTransform()
 	{
-		// --- MATEMÁTICA ORBITAL ---
-		// 1. Empezamos en el origen (0,0,distance)
 		Vector3 position = new Vector3(0, 0, _currentDistance);
-		
-		// 2. Rotamos primero en el eje X (Elevación/Pitch)
 		position = position.Rotated(Vector3.Right, _currentRotation.Y);
-		
-		// 3. Rotamos luego en el eje Y (Azimut/Yaw)
-		// Nota: Usamos Vector3.Up global para que la rotación sea sobre el eje del planeta
 		position = position.Rotated(Vector3.Up, _currentRotation.X);
-
-		// 4. Aplicamos posición
 		GlobalPosition = position;
-		
-		// 5. Miramos siempre al centro (0,0,0)
 		LookAt(Vector3.Zero, Vector3.Up);
 	}
 }
