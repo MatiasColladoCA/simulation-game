@@ -1,51 +1,98 @@
 using Godot;
-using System.Collections.Generic;
 
 public partial class PlanetRender : Node3D
 {
-	// Resolución de la malla base (Topología).
-	// 64 es suficiente si usas Tesselation en shader, 
-	// 256 da muy buen detalle por vértice directo.
-	[Export] public int BaseResolution = 256; 
+	[Export] public int BaseResolution = 256;
 	
-	private MeshInstance3D _meshInstance;
-	private ShaderMaterial _materialOverride;
+	// AHORA ESTO VIVE AQUÍ (Autoridad del Entorno)
+	[Export(PropertyHint.Range, "0.0, 1.0")] 
+	public float WaterLevel = 0.45f; 
 
-	// Método llamado por AgentSimulationSphere (el Orquestador)
-// Método llamado por AgentSimulationSphere (el Orquestador)
-	// AÑADIDO: argumento 'waterLevel'
-	public void Initialize(Rid heightMapRid, Rid vectorMapRid, float radius, float heightMultiplier, float waterLevel)
+	private MeshInstance3D _terrainMesh;
+	private MeshInstance3D _waterMesh; // Referencia a la esfera de agua
+	private ShaderMaterial _terrainMaterial;
+
+	// Variables de estado del mundo (para que otros las lean si hace falta)
+	public float CurrentRadius { get; private set; }
+	public float CurrentNoiseHeight { get; private set; }
+
+	public void Initialize(Rid heightMapRid, Rid vectorMapRid, float radius, float heightMultiplier)
 	{
-		// 1. Asegurar Material
-		if (_materialOverride == null)
+		CurrentRadius = radius;
+		CurrentNoiseHeight = heightMultiplier;
+
+		// 1. Configurar Material Terreno
+		if (_terrainMaterial == null)
 		{
 			var shader = GD.Load<Shader>("res://Shaders/Visual/planet_terrain.gdshader");
-			_materialOverride = new ShaderMaterial();
-			_materialOverride.Shader = shader;
+			_terrainMaterial = new ShaderMaterial();
+			_terrainMaterial.Shader = shader;
 		}
 
-		// 2. Inyectar Texturas
 		var hMap = new TextureCubemapRD { TextureRdRid = heightMapRid };
+		_terrainMaterial.SetShaderParameter("height_map_gpu", hMap);
+		_terrainMaterial.SetShaderParameter("planet_radius", radius);
+		_terrainMaterial.SetShaderParameter("noise_amplitude", heightMultiplier);
 		
-		_materialOverride.SetShaderParameter("height_map_gpu", hMap);
-		_materialOverride.SetShaderParameter("planet_radius", radius);
-		_materialOverride.SetShaderParameter("noise_amplitude", heightMultiplier);
-		
-		// --- NUEVO: Pasamos el nivel del agua al shader ---
-		_materialOverride.SetShaderParameter("water_level_norm", waterLevel);
+		// Usamos NUESTRA variable WaterLevel
+		_terrainMaterial.SetShaderParameter("water_level_norm", WaterLevel);
 
-		// 3. Generar la Geometría Física (Solo si no existe)
-		// Nota: Si cambias el radio en tiempo real, deberías destruir y recrear la malla, 
-		// pero por ahora está bien así.
-		if (_meshInstance == null)
+		// 2. Generar Terreno (Si no existe)
+		if (_terrainMesh == null)
 		{
 			GenerateCubeSphere(radius);
 		}
 		else 
 		{
-			// Si ya existe, aseguramos que tenga el material actualizado
-			_meshInstance.MaterialOverride = _materialOverride;
+			_terrainMesh.MaterialOverride = _terrainMaterial;
 		}
+
+		// 3. GENERAR/ACTUALIZAR AGUA (Lógica movida aquí)
+		UpdateWaterSphere();
+	}
+
+	// Método para ser llamado si cambias el slider en tiempo real desde el editor
+	public override void _Process(double delta)
+	{
+		// En modo editor o debug, actualizamos el shader si el slider cambia
+		if (_terrainMaterial != null)
+		{
+			 _terrainMaterial.SetShaderParameter("water_level_norm", WaterLevel);
+		}
+		
+		// Actualizar geometría del agua si cambia el nivel
+		if (_waterMesh != null)
+		{
+			 float waterRadius = CurrentRadius + (CurrentNoiseHeight * WaterLevel);
+			 if (_waterMesh.Mesh is SphereMesh sphere && Mathf.Abs(sphere.Radius - waterRadius) > 0.01f)
+			 {
+				 sphere.Radius = waterRadius;
+				 sphere.Height = waterRadius * 2.0f;
+			 }
+		}
+	}
+
+	private void UpdateWaterSphere()
+	{
+		if (_waterMesh == null)
+		{
+			_waterMesh = new MeshInstance3D { Name = "WaterSphere" };
+			AddChild(_waterMesh);
+
+			// Material de agua
+			var waterMat = new StandardMaterial3D();
+			waterMat.Transparency = BaseMaterial3D.TransparencyEnum.Alpha;
+			waterMat.AlbedoColor = new Color(0.0f, 0.2f, 0.8f, 0.6f); 
+			waterMat.Roughness = 0.1f; 
+			waterMat.Metallic = 0.5f;  
+			waterMat.EmissionEnabled = true;
+			waterMat.Emission = new Color(0.0f, 0.1f, 0.3f); 
+			waterMat.EmissionEnergyMultiplier = 0.5f;
+			_waterMesh.MaterialOverride = waterMat;
+		}
+
+		float waterRadius = CurrentRadius + (CurrentNoiseHeight * WaterLevel);
+		_waterMesh.Mesh = new SphereMesh { Radius = waterRadius, Height = waterRadius * 2.0f };
 	}
 
 
@@ -55,15 +102,11 @@ public partial class PlanetRender : Node3D
 		var st = new SurfaceTool();
 		st.Begin(Mesh.PrimitiveType.Triangles);
 
-		// Vectores base para construir un cubo
+		// Vectores y lógica matemática (EXACTAMENTE IGUAL QUE ANTES)
 		Vector3[] directions = { Vector3.Up, Vector3.Down, Vector3.Left, Vector3.Right, Vector3.Forward, Vector3.Back };
-		
-		// Ejes tangentes para iterar la superficie de cada cara
-		// (Truco matemático para orientar los quads correctamente)
 		Vector3[] axisA = { Vector3.Right, Vector3.Right, Vector3.Forward, Vector3.Back, Vector3.Right, Vector3.Left };
 		Vector3[] axisB = { Vector3.Back, Vector3.Forward, Vector3.Up, Vector3.Up, Vector3.Up, Vector3.Up };
 
-		// Iteramos las 6 caras
 		for (int i = 0; i < 6; i++)
 		{
 			Vector3 localUp = directions[i];
@@ -74,19 +117,14 @@ public partial class PlanetRender : Node3D
 			{
 				for (int x = 0; x < BaseResolution; x++)
 				{
-					// Calculamos 4 puntos de un quad en la cara del cubo
-					// Y los normalizamos inmediatamente para "inflarlos" a una esfera
 					Vector3 p1 = ComputeSpherePoint(x, y, localUp, localRight, localBottom);
 					Vector3 p2 = ComputeSpherePoint(x + 1, y, localUp, localRight, localBottom);
 					Vector3 p3 = ComputeSpherePoint(x, y + 1, localUp, localRight, localBottom);
 					Vector3 p4 = ComputeSpherePoint(x + 1, y + 1, localUp, localRight, localBottom);
 
-					// Triángulo 1
 					st.SetNormal(p1); st.SetUV(new Vector2(0, 0)); st.AddVertex(p1 * radius);
 					st.SetNormal(p2); st.SetUV(new Vector2(1, 0)); st.AddVertex(p2 * radius);
 					st.SetNormal(p3); st.SetUV(new Vector2(0, 1)); st.AddVertex(p3 * radius);
-
-					// Triángulo 2
 					st.SetNormal(p2); st.SetUV(new Vector2(1, 0)); st.AddVertex(p2 * radius);
 					st.SetNormal(p4); st.SetUV(new Vector2(1, 1)); st.AddVertex(p4 * radius);
 					st.SetNormal(p3); st.SetUV(new Vector2(0, 1)); st.AddVertex(p3 * radius);
@@ -94,34 +132,31 @@ public partial class PlanetRender : Node3D
 			}
 		}
 
-		// Generar Mesh y Optimizar
 		st.Index();
 		st.GenerateNormals(); 
 		st.GenerateTangents();
 		var mesh = st.Commit();
 
-		// Instanciar en escena
-		_meshInstance = new MeshInstance3D();
-		_meshInstance.Name = "ProceduralPlanet";
-		_meshInstance.Mesh = mesh;
-		_meshInstance.MaterialOverride = _materialOverride; // Aquí ocurre la magia visual
+		// --- AQUÍ ESTÁ EL CAMBIO ---
+		// Usamos '_terrainMesh' en lugar de '_meshInstance'
+		// Usamos '_terrainMaterial' en lugar de '_materialOverride'
 		
-		// Sombras
-		_meshInstance.CastShadow = GeometryInstance3D.ShadowCastingSetting.On;
+		_terrainMesh = new MeshInstance3D();
+		_terrainMesh.Name = "ProceduralPlanet";
+		_terrainMesh.Mesh = mesh;
+		_terrainMesh.MaterialOverride = _terrainMaterial; 
 		
-		AddChild(_meshInstance);
+		_terrainMesh.CastShadow = GeometryInstance3D.ShadowCastingSetting.On;
+		
+		AddChild(_terrainMesh);
 	}
+
+
 
 	private Vector3 ComputeSpherePoint(int x, int y, Vector3 up, Vector3 axisA, Vector3 axisB)
 	{
-		// Convertir coordenadas de grilla (x,y) a porcentaje (0.0 a 1.0)
 		Vector2 pct = new Vector2(x, y) / (float)BaseResolution;
-		
-		// Mapear al plano del cubo: Centro + (Offset X) + (Offset Y)
-		// (pct - 0.5) * 2 centra el rango en -1 a 1
 		Vector3 pointOnCube = up + (pct.X - 0.5f) * 2.0f * axisA + (pct.Y - 0.5f) * 2.0f * axisB;
-		
-		// Normalizar para convertir cubo -> esfera
 		return pointOnCube.Normalized(); 
 	}
 }

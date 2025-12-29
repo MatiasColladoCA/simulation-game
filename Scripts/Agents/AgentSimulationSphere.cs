@@ -310,38 +310,11 @@ private unsafe void SetupCompute()
 			agentMat.SetShaderParameter("tex_width", DATA_TEX_WIDTH);
 		}
 		
-		// 2. INICIALIZAR PLANETA (LIMPIO)
-		// Eliminamos el bloque sucio. Ahora solo pasamos WaterLevel como 5to argumento.
-		// PlanetRender se encarga de pasárselo al shader internamente.
+		// 2. INICIALIZAR PLANETA (DELEGACIÓN)
 		if (PlanetRenderer != null && _bakedCubemapRid.IsValid) {
-			PlanetRenderer.Initialize(_bakedCubemapRid, _vectorFieldRid, PlanetRadius, NoiseHeight, WaterLevel);
+			// Nota: Ya no pasamos WaterLevel. PlanetRenderer usa el suyo propio.
+			PlanetRenderer.Initialize(_bakedCubemapRid, _vectorFieldRid, PlanetRadius, NoiseHeight);
 		}
-
-		// 3. ESFERA DE AGUA (VISUAL)
-		var waterNode = GetNodeOrNull<MeshInstance3D>("WaterSphere");
-		if (waterNode == null) {
-			waterNode = new MeshInstance3D { Name = "WaterSphere" };
-			AddChild(waterNode);
-		}
-
-		// El radio visual del agua depende del nivel
-		float waterRadius = PlanetRadius + (NoiseHeight * WaterLevel); 
-		
-		waterNode.Mesh = new SphereMesh { 
-			Radius = waterRadius, 
-			Height = waterRadius * 2.0f 
-		};
-
-		var waterMat = new StandardMaterial3D();
-		waterMat.Transparency = BaseMaterial3D.TransparencyEnum.Alpha;
-		waterMat.AlbedoColor = new Color(0.0f, 0.2f, 0.8f, 0.6f); 
-		waterMat.Roughness = 0.1f; 
-		waterMat.Metallic = 0.5f;  
-		waterMat.EmissionEnabled = true;
-		waterMat.Emission = new Color(0.0f, 0.1f, 0.3f); 
-		waterMat.EmissionEnergyMultiplier = 0.5f;
-		
-		waterNode.MaterialOverride = waterMat;
 	}
 
 

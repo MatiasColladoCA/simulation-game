@@ -27,6 +27,9 @@ reflected_light_source = 2
 
 [node name="WorldRenderer" type="Node3D" parent="."]
 script = ExtResource("1_lquwl")
+WaterLevel = 0.12
+
+[node name="PlanetMeshVisual" type="MeshInstance3D" parent="WorldRenderer"]
 
 [node name="DirectionalLight3D" type="DirectionalLight3D" parent="."]
 transform = Transform3D(0.7071068, -0.5, 0.5, 0, 0.7071068, 0.70710677, -0.7071068, -0.5, 0.5, -324.38684, 324.88275, 40)
@@ -73,6 +76,3 @@ WaterLevel = 0.1
 
 [node name="AgentVisualizer" type="MultiMeshInstance3D" parent="AgentSimulationSphere"]
 visible = false
-
-[node name="PlanetMeshVisual" type="MeshInstance3D" parent="AgentSimulationSphere"]
-skeleton = NodePath("../../WorldRenderer")
