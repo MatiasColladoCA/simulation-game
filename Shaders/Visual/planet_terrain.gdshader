@@ -8,6 +8,9 @@ uniform float noise_amplitude = 10.0;
 uniform float water_level_norm = 0.5; 
 uniform bool debug_flow = false;
 uniform samplerCube vector_field_gpu : filter_linear, repeat_enable;
+uniform float debug_line_density = 10.0; // Controla qué tan finas son las líneas
+uniform float debug_flow_speed = 2.0;    // Velocidad del veteado
+
 
 // --- COLORES ---
 uniform vec3 color_seabed : source_color = vec3(0.2, 0.15, 0.1);
@@ -23,8 +26,11 @@ instance uniform vec3 chunk_axis_a;
 instance uniform vec3 chunk_axis_b;
 instance uniform float chunk_size;
 
+
+
 varying float v_height_norm; 
 varying vec3 v_dir_local;
+varying vec3 v_world_pos;
 
 void vertex() {
     // 1. Calcular posición en el CUBO a partir del plano UV del mesh
@@ -45,7 +51,7 @@ void vertex() {
     VERTEX = dir * final_height;
     
     v_dir_local = dir; // Guardar para el fragment shader
-
+    v_world_pos = VERTEX; // Guardamos la posición local del vértice corregida
     // Recalcular normales
     NORMAL = dir; 
 }
@@ -92,9 +98,36 @@ void fragment() {
         SPECULAR = 0.2; 
     }
     
+    
     if (debug_flow) {
         vec3 flow = texture(vector_field_gpu, v_dir_local).rgb;
-        ALBEDO = flow * 0.5 + 0.5; // Normalizar de -1..1 a 0..1 para visualización
+        
+        // --- NUEVA LÓGICA DE VETEADO ---
+        // 1. Creamos una coordenada basada en la posición local proyectada en el flujo
+        // Usamos el tiempo para animar el desplazamiento
+        // Nueva lógica: Proyectamos la posición sobre la dirección del flujo
+        // Esto hace que las franjas se orienten SEGÚN el vector local.
+        // Esto crea planos perpendiculares a la dirección del movimiento.
+
+        // 1. Usamos una coordenada de mundo estática para que las líneas no bailen
+        // 2. Usamos el producto punto del flujo para que la animación siga la dirección del vector
+        float static_stripes = dot(v_world_pos, vec3(0.5, 0.5, 0.5));
+        float flow_direction = dot(flow, v_dir_local); // Dirección relativa al observador
+        
+        // Multiplicamos TIME por el flujo para que solo se muevan hacia donde apunta el vector
+        float phase = TIME * debug_flow_speed;
+        float flow_pattern = sin((static_stripes - phase) * debug_line_density);
+
+
+
+        // 2. Suavizamos las líneas (anti-aliasing básico)
+        float line_mask = smoothstep(-0.2, 0.2, flow_pattern);
+        
+        // 3. Mezclamos el color del flujo con el patrón de líneas
+        // Las líneas oscuras ayudan a ver el contraste del movimiento
+        vec3 flow_rgb = flow * 0.5 + 0.5;
+        ALBEDO = mix(flow_rgb * 0.3, flow_rgb, line_mask);
+        
     } else {
         ALBEDO = final_color;
     }

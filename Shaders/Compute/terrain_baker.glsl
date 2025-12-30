@@ -157,18 +157,66 @@ void main() {
 
     vec3 dir = get_direction(id, float(params.resolution));
 
-    // 1. GENERAR ALTURA AAA
+    // --- ZONA INTACTA: GENERACIÓN DE ALTURA ---
     float n = get_terrain_aaa(dir);
-    
-    // Normalización de seguridad para que el shader visual no se rompa
-    // ridged_noise agrega mucho valor, así que a veces hay que bajarle el tono
-    // Pero lo dejaremos raw para que el parámetro "Noise Height" de C# controle la escala final.
     imageStore(height_map, ivec3(id), vec4(n, 0.0, 0.0, 1.0));
+    // ------------------------------------------
 
-    // 2. GENERAR VIENTO
-    vec3 flow = curl_noise(dir * params.noise_scale);
-    vec3 normal = dir;
-    flow = flow - dot(flow, normal) * normal; 
-    flow = normalize(flow);
-    imageStore(vector_field, ivec3(id), vec4(flow, 1.0));
+    // 1. Base ortogonal para muestreo seguro (Evita NaNs)
+    vec3 tangent = (abs(dir.y) > 0.99) ? vec3(1, 0, 0) : vec3(0, 1, 0);
+    vec3 right = normalize(cross(dir, tangent));
+    vec3 up = cross(dir, right);
+
+    // 2. Parámetros de Control
+    const float sea_level = 0.45;
+    const float macro_eps = 0.08; // "Vista larga" para ignorar montes submarinos
+    const float local_eps = 0.01; // "Vista corta" para evitar cumbres en tierra
+
+    vec3 final_flow;
+
+    if (n < sea_level) {
+        // --- CAPA DE EDICIÓN: OVERRIDE DE AGUA ---
+        // Ignoramos completamente el Curl Noise aquí.
+        
+        // Muestreamos a gran escala para detectar la masa continental, no la piedra de al lado
+        float hr = get_terrain_aaa(normalize(dir + right * macro_eps));
+        float hu = get_terrain_aaa(normalize(dir + up * macro_eps));
+        vec3 macro_grad = (hr - n) * right + (hu - n) * up;
+
+        // Vector de escape puro (Uphill macro)
+        // Multiplicamos por la profundidad para que el escape sea violento en el abismo
+        float escape_intensity = (sea_level - n) * 15.0; 
+        final_flow = macro_grad * escape_intensity;
+    } 
+    else {
+        // --- CAPA DE EDICIÓN: TIERRA FIRME ---
+        vec3 organic_flow = curl_noise(dir * params.noise_scale);
+        
+        // Gradiente local para evitar montañas
+        float hr = get_terrain_aaa(normalize(dir + right * local_eps));
+        float hu = get_terrain_aaa(normalize(dir + up * local_eps));
+        vec3 local_grad = (hr - n) * right + (hu - n) * up;
+
+        // Evitar montañas: mezcla según inclinación (Steepness)
+        float steepness = length(local_grad);
+        float avoidance_factor = smoothstep(0.01, 0.08, steepness);
+        
+        // En tierra mezclamos: Ruido orgánico + Evitación (Downhill local)
+        final_flow = mix(organic_flow, -local_grad * 10.0, avoidance_factor);
+    }
+
+    // 3. Proyección Tangencial Final
+    // Forzamos que el vector sea paralelo a la superficie
+    final_flow = final_flow - dot(final_flow, dir) * dir;
+    
+    // 4. Normalización Segura
+    float len = length(final_flow);
+    if (len > 0.0001) {
+        final_flow /= len;
+    } else {
+        // Si no hay flujo (zonas planas muertas), forzamos un vector tangente
+        final_flow = right; 
+    }
+
+    imageStore(vector_field, ivec3(id), vec4(final_flow, 1.0));
 }
