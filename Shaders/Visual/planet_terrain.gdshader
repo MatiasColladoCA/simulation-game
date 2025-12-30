@@ -6,6 +6,8 @@ uniform samplerCube height_map_gpu : filter_linear, repeat_enable;
 uniform float planet_radius = 100.0;
 uniform float noise_amplitude = 10.0;
 uniform float water_level_norm = 0.5; 
+uniform bool debug_flow = false;
+uniform samplerCube vector_field_gpu : filter_linear, repeat_enable;
 
 // --- COLORES ---
 uniform vec3 color_seabed : source_color = vec3(0.2, 0.15, 0.1);
@@ -22,6 +24,7 @@ instance uniform vec3 chunk_axis_b;
 instance uniform float chunk_size;
 
 varying float v_height_norm; 
+varying vec3 v_dir_local;
 
 void vertex() {
     // 1. Calcular posición en el CUBO a partir del plano UV del mesh
@@ -41,6 +44,8 @@ void vertex() {
     float final_height = planet_radius + (h_val * noise_amplitude);
     VERTEX = dir * final_height;
     
+    v_dir_local = dir; // Guardar para el fragment shader
+
     // Recalcular normales
     NORMAL = dir; 
 }
@@ -87,5 +92,10 @@ void fragment() {
         SPECULAR = 0.2; 
     }
     
-    ALBEDO = final_color;
+    if (debug_flow) {
+        vec3 flow = texture(vector_field_gpu, v_dir_local).rgb;
+        ALBEDO = flow * 0.5 + 0.5; // Normalizar de -1..1 a 0..1 para visualización
+    } else {
+        ALBEDO = final_color;
+    }
 }

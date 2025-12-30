@@ -17,6 +17,9 @@ public partial class PlanetRender : Node3D
 	private float _currentNoiseHeight;
 	private float _lastWaterLevel = -1;
 
+	private bool _isDebugMode = false;
+	private Rid _vectorFieldRid;
+
 	public void Initialize(Rid heightMapRid, Rid vectorMapRid, float radius, float heightMultiplier)
 	{
 		_currentRadius = radius;
@@ -35,6 +38,11 @@ public partial class PlanetRender : Node3D
 		_terrainMaterial.SetShaderParameter("planet_radius", radius);
 		_terrainMaterial.SetShaderParameter("noise_amplitude", heightMultiplier);
 		_terrainMaterial.SetShaderParameter("water_level_norm", WaterLevel);
+
+		_vectorFieldRid = vectorMapRid;
+		var vMap = new TextureCubemapRD { TextureRdRid = vectorMapRid };
+		_terrainMaterial.SetShaderParameter("vector_field_gpu", vMap);
+
 
 		// 2. Generar Mesh Base (Una sola vez)
 		if (_patchMesh == null) GeneratePatchMesh();
@@ -127,6 +135,13 @@ public partial class PlanetRender : Node3D
 
 		// 3. Actualizar árbol (Split/Merge)
 		foreach (var chunk in _rootChunks) chunk.Update();
+	
+		if (Input.IsActionJustPressed("debug_flow")) // Asegúrate de mapear "F" a "debug_flow" en Project Settings
+		{
+			_isDebugMode = !_isDebugMode;
+			_terrainMaterial.SetShaderParameter("debug_flow", _isDebugMode);
+		}
+	
 	}
 
 	private void UpdateWaterVisuals(bool force)
