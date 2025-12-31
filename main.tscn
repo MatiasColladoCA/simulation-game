@@ -58,9 +58,16 @@ BakerShaderFile = ExtResource("6_7mycd")
 [node name="CanvasLayer" type="CanvasLayer" parent="."]
 script = ExtResource("6_kek77")
 
-[node name="UX" type="Node" parent="."]
+[node name="ConsoleInput" type="LineEdit" parent="CanvasLayer"]
+visible = false
+offset_left = 384.0
+offset_top = 600.0
+offset_right = 760.0
+offset_bottom = 631.0
 
-[node name="SubViewportContainer" type="SubViewportContainer" parent="UX"]
+[node name="UI" type="Node" parent="."]
+
+[node name="SubViewportContainer" type="SubViewportContainer" parent="UI"]
 visible = false
 texture_filter = 1
 anchors_preset = 15
@@ -74,19 +81,19 @@ grow_vertical = 2
 stretch = true
 stretch_shrink = 3
 
-[node name="SubViewport" type="SubViewport" parent="UX/SubViewportContainer"]
+[node name="SubViewport" type="SubViewport" parent="UI/SubViewportContainer"]
 handle_input_locally = false
 size = Vector2i(382, 214)
 render_target_update_mode = 0
 
-[node name="Camera3D" type="Camera3D" parent="UX"]
+[node name="Camera3D" type="Camera3D" parent="UI"]
 transform = Transform3D(0.9137583, -0.28726798, 0.28726798, 0, 0.7071068, 0.7071068, -0.40625826, -0.6461247, 0.6461247, 0, 0, 150)
 script = ExtResource("3_lquwl")
 
-[node name="WorldEnvironment" type="WorldEnvironment" parent="UX"]
+[node name="WorldEnvironment" type="WorldEnvironment" parent="UI"]
 environment = SubResource("Environment_7mycd")
 
-[node name="DirectionalLight3D" type="DirectionalLight3D" parent="UX"]
+[node name="DirectionalLight3D" type="DirectionalLight3D" parent="UI"]
 transform = Transform3D(0.7071068, -0.5, 0.5, 0, 0.7071068, 0.70710677, -0.7071068, -0.5, 0.5, -324.38684, 324.88275, 40)
 light_indirect_energy = 2.485
 shadow_enabled = true

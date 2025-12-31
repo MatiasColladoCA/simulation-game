@@ -1,48 +1,43 @@
 #[compute]
 #version 450
 
+// --- REEMPLAZAR DESDE EL INICIO HASTA EL FINAL DE 'params' ---
+
 layout(local_size_x = 64, local_size_y = 1, local_size_z = 1) in;
 
-// --- ESTRUCTURAS ---
-struct Agent {
-    vec4 position; 
-    vec4 target;   
-    vec4 velocity; 
-    vec4 color;    
+struct AgentDataSphere {
+    vec4 position;
+    vec4 target;
+    vec4 velocity;
+    vec4 color;
 };
 
-// --- BINDINGS ---
-layout(set = 0, binding = 0, std430) buffer AgentsBuffer { Agent agents[]; };
-
-// CAMBIO: El Grid ahora es solo un array de enteros (Contador de densidad)
-layout(set = 0, binding = 1, std430) buffer DensityBuffer { uint density_grid[]; };
-
-layout(set = 0, binding = 2, rgba32f) writeonly uniform image2D pos_image_out;
-layout(set = 0, binding = 3, rgba32f) writeonly uniform image2D color_image_out;
+layout(set = 0, binding = 0, std430) buffer AgentBuffer { AgentDataSphere agents[]; };
+layout(set = 0, binding = 1, std430) buffer GridBuffer { uint density_grid[]; };
+layout(set = 0, binding = 2, rgba32f) uniform image2D pos_texture;
+layout(set = 0, binding = 3, rgba32f) uniform image2D col_texture;
 layout(set = 0, binding = 4) uniform samplerCube height_map;
 layout(set = 0, binding = 5) uniform samplerCube vector_field;
+layout(set = 0, binding = 6, r8) uniform image3D density_texture_out;
+layout(set = 0, binding = 7, std430) buffer CounterBuffer { uint active_count; };
 
-// --- PUSH CONSTANTS ---
 layout(push_constant) uniform Params {
-    float delta_time;
+    float delta;
     float time;
     float planet_radius;
     float noise_scale;
     float noise_height;
-    uint agent_count;
+    uint custom_param; 
     uint phase;       
-    uint grid_res;   // Resolución de la grilla (ej: 64)
-    uint tex_width; 
+    uint grid_res;    
+    uint tex_width;
+    uint pad0;         // Padding para alinear a 48 bytes (9 + 3 = 12 variables)
+    uint pad1;
+    uint pad2;   
 } params;
 
-// --- FUNCIONES DE GRILLA ---
 
-// Convierte posición 3D mundo -> Coordenada 3D grilla
-ivec3 get_grid_coord(vec3 pos) {
-    float limit = params.planet_radius * 1.5; // Espacio de simulación un poco más grande que el planeta
-    vec3 norm = (pos + limit) / (limit * 2.0); // Normalizar a 0..1
-    return ivec3(floor(norm * float(params.grid_res)));
-}
+// --- FUNCIONES DE GRILLA ---
 
 // Convierte Coordenada 3D -> Índice 1D (para el buffer)
 uint get_grid_idx(ivec3 coord) {
@@ -51,14 +46,16 @@ uint get_grid_idx(ivec3 coord) {
     return uint(c.x + c.y * int(params.grid_res) + c.z * int(params.grid_res) * int(params.grid_res));
 }
 
-// Leer densidad de una celda de manera segura
-float read_density(ivec3 coord) {
-    if (coord.x < 0 || coord.y < 0 || coord.z < 0 || 
-        coord.x >= int(params.grid_res) || coord.y >= int(params.grid_res) || coord.z >= int(params.grid_res)) {
-        return 0.0;
-    }
-    return float(density_grid[get_grid_idx(coord)]);
+ivec3 get_grid_coord(vec3 pos) {
+    vec3 normalized_pos = (pos + 125.0) / 250.0; // Ajustado al radio de seguridad
+    return ivec3(clamp(normalized_pos * float(params.grid_res), vec3(0.0), vec3(float(params.grid_res - 1))));
 }
+
+float read_density(ivec3 coord) {
+    uint idx = uint(coord.x + coord.y * int(params.grid_res) + coord.z * int(params.grid_res * params.grid_res));
+    return float(density_grid[idx]) / 255.0;
+}
+
 
 // --- FASES ---
 
@@ -71,57 +68,58 @@ void phase_clear() {
 
 void phase_populate() {
     uint idx = gl_GlobalInvocationID.x;
-    if (idx >= params.agent_count) return;
+    // params.agent_count no existía, usamos custom_param enviado desde C#
+    if (idx >= params.custom_param) return; 
     if (agents[idx].color.w < 0.5) return; 
 
     ivec3 coord = get_grid_coord(agents[idx].position.xyz);
     uint grid_idx = get_grid_idx(coord);
     
-    // Aquí el atomicAdd es mucho más rápido porque el buffer es pequeño y simple
     atomicAdd(density_grid[grid_idx], 1);
 }
 
 void phase_update() {
     uint idx = gl_GlobalInvocationID.x;
-    if (idx >= params.agent_count) return;
+    // Reemplazado el literal 5000 por el parámetro dinámico
+    if (idx >= params.custom_param) return;
 
-    Agent me = agents[idx];
-    int tex_w = int(params.tex_width);
+    if (agents[idx].position.w < 0.1) return;
+
+    AgentDataSphere me = agents[idx];    int tex_w = int(params.tex_width);
     ivec2 coord_tex = ivec2(int(idx) % tex_w, int(idx) / tex_w);
 
     vec3 pos = me.position.xyz;
     vec3 vel = me.velocity.xyz;
     float max_speed = me.velocity.w;
 
-    // 1. NAVEGACIÓN (Flowfield & Terreno)
+    // 2. NAVEGACIÓN (Flowfield & Terreno)
     vec3 dir_norm = normalize(pos);
+    
+    // textureLod es obligatorio en Compute Shaders para samplers
     float h_val = textureLod(height_map, dir_norm, 0.0).r;
     float terrain_floor = params.planet_radius + (h_val * params.noise_height);
     vec3 flow_dir = textureLod(vector_field, dir_norm, 0.0).rgb;
     
-    // Fuerza de dirección base
+    // Fuerza de dirección base (Steering)
     vec3 acc_force = (flow_dir * max_speed - vel) * 4.0;
 
-    // 2. REPULSIÓN POR DENSIDAD (GRADIENTE)
-    // Calculamos hacia dónde disminuye la densidad para movernos hacia allá
-    ivec3 g_coord = get_grid_coord(pos);
+    // 3. REPULSIÓN POR DENSIDAD (GRADIENTE)
+    // get_grid_coord y read_density deben estar definidos arriba en tu archivo
+    ivec3 g_coord = ivec3(((pos + 120.0) / 240.0) * float(params.grid_res));
     
-    // Muestreo de gradiente (vecinos)
-    float d_left = read_density(g_coord + ivec3(-1, 0, 0));
+    float d_left  = read_density(g_coord + ivec3(-1, 0, 0));
     float d_right = read_density(g_coord + ivec3(1, 0, 0));
-    float d_down = read_density(g_coord + ivec3(0, -1, 0));
-    float d_up = read_density(g_coord + ivec3(0, 1, 0));
-    float d_back = read_density(g_coord + ivec3(0, 0, -1));
-    float d_fwd = read_density(g_coord + ivec3(0, 0, 1));
+    float d_down  = read_density(g_coord + ivec3(0, -1, 0));
+    float d_up    = read_density(g_coord + ivec3(0, 1, 0));
+    float d_back  = read_density(g_coord + ivec3(0, 0, -1));
+    float d_fwd   = read_density(g_coord + ivec3(0, 0, 1));
     
-    // Vector Gradiente: Apunta hacia donde AUMENTA la densidad
     vec3 gradient = vec3(d_right - d_left, d_up - d_down, d_fwd - d_back);
     
-    // Nosotros queremos ir al contrario (-gradiente) para escapar de la multitud
-    // Multiplicamos por un factor de "Presión" (ej: 10.0)
+    // Repulsión: -gradient * factor_presión
     acc_force -= gradient * 15.0; 
 
-    // Ruido extra si la densidad local es muy alta (para desatascar)
+    // Ruido de desatasco (Jitter)
     float local_density = read_density(g_coord);
     if (local_density > 5.0) {
          float noise_seed = float(idx) * 0.1 + params.time;
@@ -129,34 +127,37 @@ void phase_update() {
          acc_force += jitter * local_density * 2.0;
     }
 
-    // 3. INTEGRACIÓN FÍSICA
-    vel += acc_force * params.delta_time;
+    // 4. INTEGRACIÓN FÍSICA (Euler)
+    // Usamos params.delta para coincidir con el struct Params
+    vel += acc_force * params.delta;
     
-    // Limitar velocidad
     if (length(vel) > max_speed) vel = normalize(vel) * max_speed;
-    pos += vel * params.delta_time;
+    pos += vel * params.delta;
 
-    // 4. SNAP TO TERRAIN
+    // 5. RESTRICCIÓN ESFÉRICA Y SNAP
     float current_r = length(pos);
     if (current_r < terrain_floor) {
         pos = normalize(pos) * terrain_floor;
     } else {
-        // Gravedad suave hacia el suelo
-        pos = normalize(pos) * max(terrain_floor, current_r - (10.0 * params.delta_time));
+        // Gravedad suave hacia la superficie
+        pos = normalize(pos) * max(terrain_floor, current_r - (10.0 * params.delta));
     }
     
-    // Alinear velocidad al suelo
-    vec3 normal = normalize(pos);
-    vel = vel - dot(vel, normal) * normal; 
+    // Proyectar velocidad al plano tangente (evita que intenten "atravesar" el suelo)
+    vec3 surface_normal = normalize(pos);
+    vel = vel - dot(vel, surface_normal) * surface_normal; 
 
-    // Guardar
+    // 6. GUARDAR DATOS (Buffer y Texturas)
     me.position.xyz = pos;
     me.velocity.xyz = vel;
     agents[idx] = me;
 
-    imageStore(pos_image_out, coord_tex, me.position);
-    imageStore(color_image_out, coord_tex, me.color);
-}
+    // Sincronizado con bindings de AgentSystem.cs
+    imageStore(pos_texture, coord_tex, me.position);
+    imageStore(col_texture, coord_tex, me.color);
+    }
+
+
 
 void main() {
     if (params.phase == 0) phase_clear();

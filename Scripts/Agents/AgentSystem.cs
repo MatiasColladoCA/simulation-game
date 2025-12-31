@@ -23,8 +23,11 @@ public partial class AgentSystem : Node3D
 	
 	// RIDs
 	private Rid _shaderRid, _pipelineRid, _bufferRid, _uniformSetRid, _gridBufferRid;
-	private Rid _posTextureRid, _colorTextureRid;
-	private Rid _samplerRid;
+	private Rid _posTextureRid, _colorTextureRid, _densityTextureRid;
+	
+	
+	private Rid _samplerRid, _counterBufferRid;
+	public uint ActiveAgentCount { get; private set; }
 	
 	// Datos externos (Inyectados)
 	private Rid _bakedHeightMap;
@@ -62,6 +65,8 @@ public partial class AgentSystem : Node3D
 		GD.Print("[AgentSystem] Initialized.");
 	}
 
+
+
 	public void UpdateSimulation(double delta, double time)
 	{
 		if (!_isInitialized || _rd == null) return;
@@ -72,8 +77,8 @@ public partial class AgentSystem : Node3D
 		uint groupsGrid = (uint)Mathf.CeilToInt(GRID_TOTAL_CELLS / 64.0f);
 		uint groupsAgents = (uint)Mathf.CeilToInt(AgentCount / 64.0f);
 
-		var computeList = _rd.ComputeListBegin();
-		_rd.ComputeListBindComputePipeline(computeList, _pipelineRid);
+		_rd.BufferClear(_counterBufferRid, 0, 4);
+		var computeList = _rd.ComputeListBegin();		_rd.ComputeListBindComputePipeline(computeList, _pipelineRid);
 		_rd.ComputeListBindUniformSet(computeList, _uniformSetRid, 0);
 
 		// FASE 0: CLEAR
@@ -93,8 +98,22 @@ public partial class AgentSystem : Node3D
 		_rd.ComputeListSetPushConstant(computeList, _pushConstantBuffer, (uint)_pushConstantBuffer.Length);
 		_rd.ComputeListDispatch(computeList, groupsAgents, 1, 1);
 
+		// _rd.ComputeListEnd();
+		// _rd.Submit();
+		// _rd.Sync(); // Sincronización necesaria para lectura inmediata
+		// byte[] counterBytes = _rd.BufferGetData(_counterBufferRid);
+		// ActiveAgentCount = BitConverter.ToUInt32(counterBytes, 0);
 		_rd.ComputeListEnd();
+		// Al usar el dispositivo principal, no se debe llamar a Submit ni Sync.
+		// BufferGetData provocará una sincronización automática y segura con el servidor de renderizado.
+		byte[] counterBytes = _rd.BufferGetData(_counterBufferRid);
 	}
+	
+
+
+
+
+
 	
 	// --- IMPLEMENTACIÓN INTERNA ---
 
@@ -118,78 +137,94 @@ public partial class AgentSystem : Node3D
 		}
 	}
 
+
+
+// --- LOCALIZACIÓN: AgentSystem.cs -> Método SetupData() ---
+
 	private void SetupData()
 	{
 		_cpuAgents = new AgentDataSphere[AgentCount];
-		var rng = new RandomNumberGenerator();
-		Vector3 targetA = Vector3.Down * _planetRadius;
-		Vector3 targetB = Vector3.Up * _planetRadius;
-
+		
 		for (int i = 0; i < AgentCount; i++)
 		{
-			bool isTeamA = i < (AgentCount / 2);
-			float u = rng.RandfRange(0.0f, 0.95f);
-			float spread = Mathf.Acos(1.0f - u);
-			float az = rng.Randf() * Mathf.Tau;
+			// Creamos el struct completo primero
+			AgentDataSphere initialAgent = new AgentDataSphere();
 			
-			float y = isTeamA ? Mathf.Cos(spread) : -Mathf.Cos(spread);
-			float r = Mathf.Sin(spread);
-			float x = r * Mathf.Cos(az);
-			float z = r * Mathf.Sin(az);
-			
-			Vector3 pos = new Vector3(x, y, z).Normalized() * _planetRadius;
-			Vector4 color = isTeamA ? new Vector4(0, 0.5f, 1, 1) : new Vector4(1, 0.2f, 0, 1);
-			Vector3 tgt = isTeamA ? targetA : targetB;
+			// El componente W = 0.0f indica estado "Inactivo/Dormido"
+			initialAgent.Position = new Vector4(0, 0, 0, 0.0f); 
+			initialAgent.Target = Vector4.Zero;
+			initialAgent.Velocity = Vector4.Zero;
+			initialAgent.Color = Vector4.Zero;
 
-			_cpuAgents[i] = new AgentDataSphere {
-				Position = new Vector4(pos.X, pos.Y, pos.Z, 0.5f),
-				Target = new Vector4(tgt.X, tgt.Y, tgt.Z, 0.0f),
-				Velocity = new Vector4(0, 0, 0, 8.0f),
-				Color = color
-			};
+			// Asignamos el struct al array
+			// COMENTARIO: Esto evita el error CS0131
+			_cpuAgents[i] = initialAgent;
 		}
 	}
 
-	private unsafe void SetupCompute()
-	{
-		var shaderSpirv = ComputeShaderFile.GetSpirV();
-		_shaderRid = _rd.ShaderCreateFromSpirV(shaderSpirv);
-		_pipelineRid = _rd.ComputePipelineCreate(_shaderRid);
 
-		int bytes = Marshal.SizeOf<AgentDataSphere>() * AgentCount;
-		byte[] initData = StructureToByteArray(_cpuAgents);
-		_bufferRid = _rd.StorageBufferCreate((uint)bytes, initData);
-		
-		int gridBytes = GRID_TOTAL_CELLS * 4; 
-		_gridBufferRid = _rd.StorageBufferCreate((uint)gridBytes);
-		_rd.BufferClear(_gridBufferRid, 0, (uint)gridBytes);
 
-		int texHeight = Mathf.CeilToInt((float)AgentCount / DATA_TEX_WIDTH);
-		var fmt = new RDTextureFormat {
-			Width = (uint)DATA_TEX_WIDTH, Height = (uint)texHeight, Depth = 1,
-			Format = RenderingDevice.DataFormat.R32G32B32A32Sfloat,
-			UsageBits = RenderingDevice.TextureUsageBits.StorageBit | RenderingDevice.TextureUsageBits.SamplingBit | RenderingDevice.TextureUsageBits.CanUpdateBit | RenderingDevice.TextureUsageBits.CanCopyFromBit
-		};
-		_posTextureRid = _rd.TextureCreate(fmt, new RDTextureView(), new Godot.Collections.Array<byte[]>());
-		_colorTextureRid = _rd.TextureCreate(fmt, new RDTextureView(), new Godot.Collections.Array<byte[]>());
-		_posTextureRef = new Texture2Drd { TextureRdRid = _posTextureRid };
-		_colorTextureRef = new Texture2Drd { TextureRdRid = _colorTextureRid };
 
-		var uAgent = new RDUniform { UniformType = RenderingDevice.UniformType.StorageBuffer, Binding = 0 }; uAgent.AddId(_bufferRid);
-		var uGrid = new RDUniform { UniformType = RenderingDevice.UniformType.StorageBuffer, Binding = 1 }; uGrid.AddId(_gridBufferRid);
-		var uPosTex = new RDUniform { UniformType = RenderingDevice.UniformType.Image, Binding = 2 }; uPosTex.AddId(_posTextureRid);
-		var uColTex = new RDUniform { UniformType = RenderingDevice.UniformType.Image, Binding = 3 }; uColTex.AddId(_colorTextureRid);
-		
-		var samplerState = new RDSamplerState { MagFilter = RenderingDevice.SamplerFilter.Linear, MinFilter = RenderingDevice.SamplerFilter.Linear };
-		_samplerRid = _rd.SamplerCreate(samplerState);
-		
-		var uHeight = new RDUniform { UniformType = RenderingDevice.UniformType.SamplerWithTexture, Binding = 4 }; 
-		uHeight.AddId(_samplerRid); uHeight.AddId(_bakedHeightMap);
-		var uVector = new RDUniform { UniformType = RenderingDevice.UniformType.SamplerWithTexture, Binding = 5 }; 
-		uVector.AddId(_samplerRid); uVector.AddId(_bakedVectorField);
+// --- REEMPLAZAR FUNCIÓN SetupCompute() COMPLETA ---
+private unsafe void SetupCompute()
+{
+	// 1. COMPILAR SHADER (Si esto falla, el resto no se ejecuta)
+	var shaderSpirv = ComputeShaderFile.GetSpirV();
+	_shaderRid = _rd.ShaderCreateFromSpirV(shaderSpirv);
+	if (!_shaderRid.IsValid) { GD.PrintErr("Fallo crítico: Bytecode de shader inválido."); return; }
+	_pipelineRid = _rd.ComputePipelineCreate(_shaderRid);
 
-		_uniformSetRid = _rd.UniformSetCreate(new Godot.Collections.Array<RDUniform> { uAgent, uGrid, uPosTex, uColTex, uHeight, uVector }, _shaderRid, 0);
-	}
+	// 2. CREAR TODOS LOS RECURSOS (RIDs)
+	_bufferRid = _rd.StorageBufferCreate((uint)(Marshal.SizeOf<AgentDataSphere>() * AgentCount), StructureToByteArray(_cpuAgents));
+	_gridBufferRid = _rd.StorageBufferCreate((uint)(GRID_TOTAL_CELLS * 4));
+	_counterBufferRid = _rd.StorageBufferCreate(4);
+	_rd.BufferClear(_counterBufferRid, 0, 4);
+
+	var samplerState = new RDSamplerState { MagFilter = RenderingDevice.SamplerFilter.Linear, MinFilter = RenderingDevice.SamplerFilter.Linear };
+	_samplerRid = _rd.SamplerCreate(samplerState);
+
+	int texHeight = Mathf.CeilToInt((float)AgentCount / DATA_TEX_WIDTH);
+	var fmt = new RDTextureFormat {
+		Width = (uint)DATA_TEX_WIDTH, Height = (uint)texHeight, Depth = 1,
+		Format = RenderingDevice.DataFormat.R32G32B32A32Sfloat,
+		UsageBits = RenderingDevice.TextureUsageBits.StorageBit | RenderingDevice.TextureUsageBits.SamplingBit | RenderingDevice.TextureUsageBits.CanUpdateBit | RenderingDevice.TextureUsageBits.CanCopyFromBit
+	};
+	_posTextureRid = _rd.TextureCreate(fmt, new RDTextureView(), new Godot.Collections.Array<byte[]>());
+	_colorTextureRid = _rd.TextureCreate(fmt, new RDTextureView(), new Godot.Collections.Array<byte[]>());
+
+	var fmt3d = new RDTextureFormat {
+		Width = GRID_RES, Height = GRID_RES, Depth = GRID_RES,
+		TextureType = RenderingDevice.TextureType.Type3D,
+		Format = RenderingDevice.DataFormat.R8Unorm,
+		UsageBits = RenderingDevice.TextureUsageBits.StorageBit | RenderingDevice.TextureUsageBits.SamplingBit | RenderingDevice.TextureUsageBits.CanUpdateBit
+	};
+	_densityTextureRid = _rd.TextureCreate(fmt3d, new RDTextureView(), new Godot.Collections.Array<byte[]>());
+
+	_posTextureRef = new Texture2Drd { TextureRdRid = _posTextureRid };
+	_colorTextureRef = new Texture2Drd { TextureRdRid = _colorTextureRid };
+
+	// 3. DEFINIR UNIFORMES (Usando RIDs ya creados)
+	var uAgent = new RDUniform { UniformType = RenderingDevice.UniformType.StorageBuffer, Binding = 0 }; uAgent.AddId(_bufferRid);
+	var uGrid = new RDUniform { UniformType = RenderingDevice.UniformType.StorageBuffer, Binding = 1 }; uGrid.AddId(_gridBufferRid);
+	var uPosTex = new RDUniform { UniformType = RenderingDevice.UniformType.Image, Binding = 2 }; uPosTex.AddId(_posTextureRid);
+	var uColTex = new RDUniform { UniformType = RenderingDevice.UniformType.Image, Binding = 3 }; uColTex.AddId(_colorTextureRid);
+	
+	var uHeight = new RDUniform { UniformType = RenderingDevice.UniformType.SamplerWithTexture, Binding = 4 }; 
+	uHeight.AddId(_samplerRid); uHeight.AddId(_bakedHeightMap);
+	
+	var uVector = new RDUniform { UniformType = RenderingDevice.UniformType.SamplerWithTexture, Binding = 5 }; 
+	uVector.AddId(_samplerRid); uVector.AddId(_bakedVectorField);
+	
+	var uDensity = new RDUniform { UniformType = RenderingDevice.UniformType.Image, Binding = 6 }; uDensity.AddId(_densityTextureRid);
+	var uCounter = new RDUniform { UniformType = RenderingDevice.UniformType.StorageBuffer, Binding = 7 }; uCounter.AddId(_counterBufferRid);
+
+	// 4. CREAR UNIFORM SET FINAL
+	_uniformSetRid = _rd.UniformSetCreate(new Godot.Collections.Array<RDUniform> { 
+		uAgent, uGrid, uPosTex, uColTex, uHeight, uVector, uDensity, uCounter 
+	}, _shaderRid, 0);
+}
+
+
 
 	private void SetupVisuals()
 	{
@@ -238,7 +273,74 @@ public partial class AgentSystem : Node3D
 		SafeFree(_gridBufferRid);
 		SafeFree(_posTextureRid);
 		SafeFree(_colorTextureRid);
+		SafeFree(_densityTextureRid);
 		SafeFree(_shaderRid);
 		// Pipeline y Samplers se limpian a menudo con el contexto, pero se pueden añadir si hay leaks.
 	}
+
+
+	// --- DENTRO DE AgentSystem.cs ---
+
+	
+	// --- LOCALIZACIÓN: AgentSystem.cs -> Método SpawnAgent() ---
+
+	public void SpawnAgent(Vector3 worldPos, int index)
+	{
+		if (_rd == null || !_isInitialized) return;
+
+		// 1. Extraer el dato actual del pool (Copia)
+		AgentDataSphere agent = _cpuAgents[index];
+
+		// 2. Modificar los campos necesarios
+		agent.Position = new Vector4(worldPos.X, worldPos.Y, worldPos.Z, 1.0f); // W=1.0 activa el slot
+		agent.Color = new Vector4(1, 1, 1, 1); // Blanco para visibilidad
+		agent.Velocity = new Vector4(0, 0, 0, 10.0f); // Reset de velocidad
+
+		// 3. Reinsertar en el pool local
+		_cpuAgents[index] = agent;
+
+		// 4. Sincronizar con VRAM
+		int structSize = Marshal.SizeOf<AgentDataSphere>();
+		byte[] data = StructureToByteArray(new AgentDataSphere[] { agent });
+		uint offset = (uint)(index * structSize);
+		
+		_rd.BufferUpdate(_bufferRid, offset, (uint)structSize, data);
+	}
+
+
+
+
+	// --- AÑADIR AL FINAL DE LA CLASE AgentSystem ---
+
+	public void SpawnRandomAgents(int count)
+	{
+		var rng = new RandomNumberGenerator();
+		rng.Randomize();
+		int spawnedCount = 0;
+
+		for (int i = 0; i < AgentCount; i++)
+		{
+			if (spawnedCount >= count) break;
+
+			// Solo usamos slots inactivos (W < 0.1)
+			if (_cpuAgents[i].Position.W < 0.1f)
+			{
+				// Distribución esférica uniforme
+				float phi = rng.Randf() * Mathf.Tau;
+				float cosTheta = rng.RandfRange(-1.0f, 1.0f);
+				float theta = Mathf.Acos(cosTheta);
+
+				Vector3 randomDir = new Vector3(
+					Mathf.Sin(theta) * Mathf.Cos(phi),
+					Mathf.Sin(theta) * Mathf.Sin(phi),
+					Mathf.Cos(theta)
+				);
+
+				SpawnAgent(randomDir * _planetRadius, i);
+				spawnedCount++;
+			}
+		}
+		GD.Print($"[AgentSystem] Spawn masivo completado: {spawnedCount} agentes activados.");
+	}
+
 }
