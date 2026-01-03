@@ -1,0 +1,14 @@
+[remap]
+
+importer="glsl"
+type="RDShaderFile"
+uid="uid://dw1nnja5i2vvf"
+path="res://.godot/imported/poi_painter.glsl-bd428714f5b819128d1b4189bd68fb6b.res"
+
+[deps]
+
+source_file="res://Shaders/Compute/poi_painter.glsl"
+dest_files=["res://.godot/imported/poi_painter.glsl-bd428714f5b819128d1b4189bd68fb6b.res"]
+
+[params]
+

@@ -6,10 +6,10 @@ using System.Runtime.InteropServices;
 [StructLayout(LayoutKind.Sequential, Pack = 16)]
 public struct AgentDataSphere
 {
-	public Vector4 Position; 
-	public Vector4 Target;   
-	public Vector4 Velocity; 
-	public Vector4 Color;    
+	public Vector4 Position;   // w: state_timer
+	public Vector4 Velocity;   // w: current_state
+	public Vector4 GroupData;  // x: group_id, y: density_time
+	public Vector4 Color;      // rgba
 }
 
 public partial class AgentSystem : Node3D
@@ -30,8 +30,6 @@ public partial class AgentSystem : Node3D
 	public uint ActiveAgentCount { get; private set; }
 	
 	// Datos externos (Inyectados)
-	private Rid _bakedHeightMap;
-	private Rid _bakedVectorField;
 	private float _planetRadius;
 	private float _noiseScale;
 	private float _noiseHeight;
@@ -46,16 +44,27 @@ public partial class AgentSystem : Node3D
 	private const int GRID_RES = 64; 
 	private const int GRID_TOTAL_CELLS = GRID_RES * GRID_RES * GRID_RES;
 
+
+	private Rid _bakedHeightMap;
+	private Rid _bakedVectorField;
+	private Rid _poiBufferRid;
+
+
+
 	// --- API PÚBLICA ---
 
-	public void Initialize(RenderingDevice rd, Rid heightMap, Rid vectorField, float radius, float nScale, float nHeight)
-	{
+	public void Initialize(RenderingDevice rd, EnvironmentManager env, PlanetParams config)	{
 		_rd = rd;
-		_bakedHeightMap = heightMap;
-		_bakedVectorField = vectorField;
-		_planetRadius = radius;
-		_noiseScale = nScale;
-		_noiseHeight = nHeight;
+		
+		// Asignación desde el nuevo gestor de entorno
+		_bakedHeightMap = env.HeightMap;
+		_bakedVectorField = env.VectorField;
+		_poiBufferRid = env.POIBuffer;
+
+		_planetRadius = config.Radius;
+		_noiseScale = config.NoiseScale;
+		_noiseHeight = config.NoiseHeight;
+
 
 		SetupData();
 		SetupCompute();
@@ -74,39 +83,52 @@ public partial class AgentSystem : Node3D
 		float dt = (float)delta;
 		float t = (float)time;
 
+		// Despacho 1D para Buffers (Agentes y Grilla lineal)
 		uint groupsGrid = (uint)Mathf.CeilToInt(GRID_TOTAL_CELLS / 64.0f);
 		uint groupsAgents = (uint)Mathf.CeilToInt(AgentCount / 64.0f);
+		
+		// Despacho 3D para la Textura de Influencia (64x64x64)
+		// local_size_x del shader es 64, por lo que dividimos GRID_RES / 64 en X
+		uint gX = (uint)Mathf.CeilToInt(GRID_RES / 64.0f);
+		uint gY = (uint)GRID_RES;
+		uint gZ = (uint)GRID_RES;
 
 		_rd.BufferClear(_counterBufferRid, 0, 4);
-		var computeList = _rd.ComputeListBegin();		_rd.ComputeListBindComputePipeline(computeList, _pipelineRid);
+		
+		long computeList = _rd.ComputeListBegin();
+		_rd.ComputeListBindComputePipeline(computeList, _pipelineRid);
 		_rd.ComputeListBindUniformSet(computeList, _uniformSetRid, 0);
 
-		// FASE 0: CLEAR
+		// FASE 0: CLEAR (Limpiar grilla de densidad)
 		UpdatePushConstants(dt, t, 0, GRID_RES); 
 		_rd.ComputeListSetPushConstant(computeList, _pushConstantBuffer, (uint)_pushConstantBuffer.Length);
 		_rd.ComputeListDispatch(computeList, groupsGrid, 1, 1);
 		_rd.ComputeListAddBarrier(computeList);
 
-		// FASE 1: POPULATE
+		// FASE 1: POPULATE (Contar agentes por celda)
 		UpdatePushConstants(dt, t, 1, AgentCount);
 		_rd.ComputeListSetPushConstant(computeList, _pushConstantBuffer, (uint)_pushConstantBuffer.Length);
 		_rd.ComputeListDispatch(computeList, groupsAgents, 1, 1);
 		_rd.ComputeListAddBarrier(computeList);
 
-		// FASE 2: UPDATE
+		// FASE 2: UPDATE (Movimiento y estados de agentes)
 		UpdatePushConstants(dt, t, 2, AgentCount);
 		_rd.ComputeListSetPushConstant(computeList, _pushConstantBuffer, (uint)_pushConstantBuffer.Length);
 		_rd.ComputeListDispatch(computeList, groupsAgents, 1, 1);
+		_rd.ComputeListAddBarrier(computeList);
 
-		// _rd.ComputeListEnd();
-		// _rd.Submit();
-		// _rd.Sync(); // Sincronización necesaria para lectura inmediata
-		// byte[] counterBytes = _rd.BufferGetData(_counterBufferRid);
-		// ActiveAgentCount = BitConverter.ToUInt32(counterBytes, 0);
+		// FASE 3: PAINT POIS (Pintar puntos de interés en la textura 3D)
+		UpdatePushConstants(dt, t, 3, (int)GRID_RES);
+		_rd.ComputeListSetPushConstant(computeList, _pushConstantBuffer, (uint)_pushConstantBuffer.Length);
+		// El despacho debe cubrir el volumen 64x64x64. 
+		// Como local_size_x es 64, despachamos (1, 64, 64) grupos.
+		_rd.ComputeListDispatch(computeList, gX, gY, gZ);
+
 		_rd.ComputeListEnd();
-		// Al usar el dispositivo principal, no se debe llamar a Submit ni Sync.
-		// BufferGetData provocará una sincronización automática y segura con el servidor de renderizado.
+
+		// Sincronización implícita mediante lectura de contador
 		byte[] counterBytes = _rd.BufferGetData(_counterBufferRid);
+		ActiveAgentCount = BitConverter.ToUInt32(counterBytes, 0);
 	}
 	
 
@@ -151,10 +173,13 @@ public partial class AgentSystem : Node3D
 			AgentDataSphere initialAgent = new AgentDataSphere();
 			
 			// El componente W = 0.0f indica estado "Inactivo/Dormido"
-			initialAgent.Position = new Vector4(0, 0, 0, 0.0f); 
-			initialAgent.Target = Vector4.Zero;
+			initialAgent.Position = Vector4.Zero;
+			// initialAgent.Target = Vector4.Zero;
 			initialAgent.Velocity = Vector4.Zero;
 			initialAgent.Color = Vector4.Zero;
+
+			// IMPORTANTE: Color.w = 0.0f es nuestra "Life Flag" (Agente muerto/inactivo)
+			initialAgent.Color = new Vector4(0, 0, 0, 0.0f);
 
 			// Asignamos el struct al array
 			// COMENTARIO: Esto evita el error CS0131
@@ -165,64 +190,134 @@ public partial class AgentSystem : Node3D
 
 
 
-// --- REEMPLAZAR FUNCIÓN SetupCompute() COMPLETA ---
-private unsafe void SetupCompute()
-{
-	// 1. COMPILAR SHADER (Si esto falla, el resto no se ejecuta)
-	var shaderSpirv = ComputeShaderFile.GetSpirV();
-	_shaderRid = _rd.ShaderCreateFromSpirV(shaderSpirv);
-	if (!_shaderRid.IsValid) { GD.PrintErr("Fallo crítico: Bytecode de shader inválido."); return; }
-	_pipelineRid = _rd.ComputePipelineCreate(_shaderRid);
+	// --- REEMPLAZAR FUNCIÓN SetupCompute() COMPLETA ---
+	private unsafe void SetupCompute()
+	{
+		// 1. COMPILAR SHADER (Si esto falla, el resto no se ejecuta)
+		// var shaderSpirv = ComputeShaderFile.GetSpirV();
+		// _shaderRid = _rd.ShaderCreateFromSpirV(shaderSpirv);
+		// if (ComputeShaderFile == null)
+		// {
+		// 	GD.PrintErr("[AgentSystem] ComputeShaderFile es null. Asigna el shader en el Inspector.");
+		// 	return;
+		// }
+		// if (!_shaderRid.IsValid) { GD.PrintErr("Fallo crítico: Bytecode de shader inválido."); return; }
+		// _pipelineRid = _rd.ComputePipelineCreate(_shaderRid);
 
-	// 2. CREAR TODOS LOS RECURSOS (RIDs)
-	_bufferRid = _rd.StorageBufferCreate((uint)(Marshal.SizeOf<AgentDataSphere>() * AgentCount), StructureToByteArray(_cpuAgents));
-	_gridBufferRid = _rd.StorageBufferCreate((uint)(GRID_TOTAL_CELLS * 4));
-	_counterBufferRid = _rd.StorageBufferCreate(4);
-	_rd.BufferClear(_counterBufferRid, 0, 4);
 
-	var samplerState = new RDSamplerState { MagFilter = RenderingDevice.SamplerFilter.Linear, MinFilter = RenderingDevice.SamplerFilter.Linear };
-	_samplerRid = _rd.SamplerCreate(samplerState);
 
-	int texHeight = Mathf.CeilToInt((float)AgentCount / DATA_TEX_WIDTH);
-	var fmt = new RDTextureFormat {
-		Width = (uint)DATA_TEX_WIDTH, Height = (uint)texHeight, Depth = 1,
-		Format = RenderingDevice.DataFormat.R32G32B32A32Sfloat,
-		UsageBits = RenderingDevice.TextureUsageBits.StorageBit | RenderingDevice.TextureUsageBits.SamplingBit | RenderingDevice.TextureUsageBits.CanUpdateBit | RenderingDevice.TextureUsageBits.CanCopyFromBit
-	};
-	_posTextureRid = _rd.TextureCreate(fmt, new RDTextureView(), new Godot.Collections.Array<byte[]>());
-	_colorTextureRid = _rd.TextureCreate(fmt, new RDTextureView(), new Godot.Collections.Array<byte[]>());
 
-	var fmt3d = new RDTextureFormat {
-		Width = GRID_RES, Height = GRID_RES, Depth = GRID_RES,
-		TextureType = RenderingDevice.TextureType.Type3D,
-		Format = RenderingDevice.DataFormat.R8Unorm,
-		UsageBits = RenderingDevice.TextureUsageBits.StorageBit | RenderingDevice.TextureUsageBits.SamplingBit | RenderingDevice.TextureUsageBits.CanUpdateBit
-	};
-	_densityTextureRid = _rd.TextureCreate(fmt3d, new RDTextureView(), new Godot.Collections.Array<byte[]>());
+			// 1. VERIFICAR QUE EL ARCHIVO SHADER EXISTE
+		if (ComputeShaderFile == null)
+		{
+			GD.PrintErr("[AgentSystem] ComputeShaderFile es null. Asigna el shader en el Inspector.");
+			return;
+		}
 
-	_posTextureRef = new Texture2Drd { TextureRdRid = _posTextureRid };
-	_colorTextureRef = new Texture2Drd { TextureRdRid = _colorTextureRid };
+		// 2. INTENTAR OBTENER SPIR-V CON MANEJO DE ERRORES
+		RDShaderSpirV shaderSpirv;
+		try
+		{
+			shaderSpirv = ComputeShaderFile.GetSpirV();
+		}
+		catch (Exception e)
+		{
+			GD.PrintErr($"[AgentSystem] Error al obtener SPIR-V: {e.Message}");
+			return;
+		}
 
-	// 3. DEFINIR UNIFORMES (Usando RIDs ya creados)
-	var uAgent = new RDUniform { UniformType = RenderingDevice.UniformType.StorageBuffer, Binding = 0 }; uAgent.AddId(_bufferRid);
-	var uGrid = new RDUniform { UniformType = RenderingDevice.UniformType.StorageBuffer, Binding = 1 }; uGrid.AddId(_gridBufferRid);
-	var uPosTex = new RDUniform { UniformType = RenderingDevice.UniformType.Image, Binding = 2 }; uPosTex.AddId(_posTextureRid);
-	var uColTex = new RDUniform { UniformType = RenderingDevice.UniformType.Image, Binding = 3 }; uColTex.AddId(_colorTextureRid);
-	
-	var uHeight = new RDUniform { UniformType = RenderingDevice.UniformType.SamplerWithTexture, Binding = 4 }; 
-	uHeight.AddId(_samplerRid); uHeight.AddId(_bakedHeightMap);
-	
-	var uVector = new RDUniform { UniformType = RenderingDevice.UniformType.SamplerWithTexture, Binding = 5 }; 
-	uVector.AddId(_samplerRid); uVector.AddId(_bakedVectorField);
-	
-	var uDensity = new RDUniform { UniformType = RenderingDevice.UniformType.Image, Binding = 6 }; uDensity.AddId(_densityTextureRid);
-	var uCounter = new RDUniform { UniformType = RenderingDevice.UniformType.StorageBuffer, Binding = 7 }; uCounter.AddId(_counterBufferRid);
+		// 3. VERIFICAR QUE SPIR-V SE COMPILÓ CORRECTAMENTE
+		if (shaderSpirv == null)
+		{
+			GD.PrintErr("[AgentSystem] shaderSpirv es null después de GetSpirV()");
+			return;
+		}
 
-	// 4. CREAR UNIFORM SET FINAL
-	_uniformSetRid = _rd.UniformSetCreate(new Godot.Collections.Array<RDUniform> { 
-		uAgent, uGrid, uPosTex, uColTex, uHeight, uVector, uDensity, uCounter 
-	}, _shaderRid, 0);
-}
+		// 4. VERIFICAR SI HAY MENSAJES DE ERROR DE COMPILACIÓN
+		string compileError = shaderSpirv.CompileErrorCompute;
+		if (!string.IsNullOrEmpty(compileError))
+		{
+			GD.PrintErr($"[AgentSystem] Error de compilación del shader:\n{compileError}");
+			return;
+		}
+
+		// 5. CREAR SHADER CON VALIDACIÓN
+		_shaderRid = _rd.ShaderCreateFromSpirV(shaderSpirv);
+		
+		if (!_shaderRid.IsValid)
+		{
+			GD.PrintErr("[AgentSystem] Fallo crítico: No se pudo crear el shader desde SPIR-V.");
+			GD.PrintErr("Revisa el archivo .glsl y asegúrate de que los bindings sean correctos.");
+			return;
+		}
+
+		GD.Print("[AgentSystem] Shader compilado exitosamente.");
+
+		// 6. CREAR PIPELINE
+		_pipelineRid = _rd.ComputePipelineCreate(_shaderRid);
+		if (!_pipelineRid.IsValid)
+		{
+			GD.PrintErr("[AgentSystem] No se pudo crear el compute pipeline.");
+			return;
+		}
+
+		// 2. CREAR TODOS LOS RECURSOS (RIDs)
+		_bufferRid = _rd.StorageBufferCreate((uint)(Marshal.SizeOf<AgentDataSphere>() * AgentCount), StructureToByteArray(_cpuAgents));
+		_gridBufferRid = _rd.StorageBufferCreate((uint)(GRID_TOTAL_CELLS * 4));
+		_counterBufferRid = _rd.StorageBufferCreate(4);
+		_rd.BufferClear(_counterBufferRid, 0, 4);
+
+		var samplerState = new RDSamplerState { MagFilter = RenderingDevice.SamplerFilter.Linear, MinFilter = RenderingDevice.SamplerFilter.Linear };
+		_samplerRid = _rd.SamplerCreate(samplerState);
+
+		int texHeight = Mathf.CeilToInt((float)AgentCount / DATA_TEX_WIDTH);
+		var fmt = new RDTextureFormat {
+			Width = (uint)DATA_TEX_WIDTH, Height = (uint)texHeight, Depth = 1,
+			Format = RenderingDevice.DataFormat.R32G32B32A32Sfloat,
+			UsageBits = RenderingDevice.TextureUsageBits.StorageBit | RenderingDevice.TextureUsageBits.SamplingBit | RenderingDevice.TextureUsageBits.CanUpdateBit | RenderingDevice.TextureUsageBits.CanCopyFromBit
+		};
+		_posTextureRid = _rd.TextureCreate(fmt, new RDTextureView(), new Godot.Collections.Array<byte[]>());
+		_colorTextureRid = _rd.TextureCreate(fmt, new RDTextureView(), new Godot.Collections.Array<byte[]>());
+
+		var fmt3d = new RDTextureFormat {
+			Width = GRID_RES, Height = GRID_RES, Depth = GRID_RES,
+			TextureType = RenderingDevice.TextureType.Type3D,
+			Format = RenderingDevice.DataFormat.R8Unorm,
+			UsageBits = RenderingDevice.TextureUsageBits.StorageBit | RenderingDevice.TextureUsageBits.SamplingBit | RenderingDevice.TextureUsageBits.CanUpdateBit
+		};
+		_densityTextureRid = _rd.TextureCreate(fmt3d, new RDTextureView(), new Godot.Collections.Array<byte[]>());
+
+		_posTextureRef = new Texture2Drd { TextureRdRid = _posTextureRid };
+		_colorTextureRef = new Texture2Drd { TextureRdRid = _colorTextureRid };
+
+		// 3. DEFINIR UNIFORMES (Usando RIDs ya creados)
+		var uAgent = new RDUniform { UniformType = RenderingDevice.UniformType.StorageBuffer, Binding = 0 }; uAgent.AddId(_bufferRid);
+		var uGrid = new RDUniform { UniformType = RenderingDevice.UniformType.StorageBuffer, Binding = 1 }; uGrid.AddId(_gridBufferRid);
+		var uPosTex = new RDUniform { UniformType = RenderingDevice.UniformType.Image, Binding = 2 }; uPosTex.AddId(_posTextureRid);
+		var uColTex = new RDUniform { UniformType = RenderingDevice.UniformType.Image, Binding = 3 }; uColTex.AddId(_colorTextureRid);
+		
+		var uHeight = new RDUniform { UniformType = RenderingDevice.UniformType.SamplerWithTexture, Binding = 4 }; 
+		uHeight.AddId(_samplerRid); uHeight.AddId(_bakedHeightMap);
+		
+		var uVector = new RDUniform { UniformType = RenderingDevice.UniformType.SamplerWithTexture, Binding = 5 }; 
+		uVector.AddId(_samplerRid); uVector.AddId(_bakedVectorField);
+		
+		var uDensity = new RDUniform { UniformType = RenderingDevice.UniformType.Image, Binding = 6 }; uDensity.AddId(_densityTextureRid);
+		var uCounter = new RDUniform { UniformType = RenderingDevice.UniformType.StorageBuffer, Binding = 7 }; uCounter.AddId(_counterBufferRid);
+		// NUEVO: Agregar el buffer de POIs que viene del EnvironmentManager
+		var uPoi = new RDUniform { UniformType = RenderingDevice.UniformType.StorageBuffer, Binding = 8 };
+		if (_poiBufferRid.IsValid) {
+			uPoi.AddId(_poiBufferRid);
+		} else {
+			GD.PrintErr("[AgentSystem] ERROR: _poiBufferRid no es válido en SetupCompute");
+		}
+
+
+		// 4. CREAR UNIFORM SET FINAL
+		_uniformSetRid = _rd.UniformSetCreate(new Godot.Collections.Array<RDUniform> { 
+			uAgent, uGrid, uPosTex, uColTex, uHeight, uVector, uDensity, uCounter, uPoi 
+		}, _shaderRid, 0);
+	}
 
 
 
@@ -293,8 +388,16 @@ private unsafe void SetupCompute()
 
 		// 2. Modificar los campos necesarios
 		agent.Position = new Vector4(worldPos.X, worldPos.Y, worldPos.Z, 1.0f); // W=1.0 activa el slot
+		
 		agent.Color = new Vector4(1, 1, 1, 1); // Blanco para visibilidad
-		agent.Velocity = new Vector4(0, 0, 0, 10.0f); // Reset de velocidad
+		
+		agent.Velocity = new Vector4(0, 0, 0, 1.0f); // Reset de velocidad
+		
+		// 3. Datos de Grupo iniciales (Neutral)
+		agent.GroupData = new Vector4(0, 0, 0, 0);
+
+		// 4. Color (W = 1.0 para que phase_populate lo considere vivo)
+		agent.Color = new Vector4(1, 1, 1, 1);
 
 		// 3. Reinsertar en el pool local
 		_cpuAgents[index] = agent;
@@ -341,6 +444,11 @@ private unsafe void SetupCompute()
 			}
 		}
 		GD.Print($"[AgentSystem] Spawn masivo completado: {spawnedCount} agentes activados.");
+	}
+
+	public Rid GetInfluenceTexture()
+	{
+		return _densityTextureRid;
 	}
 
 }

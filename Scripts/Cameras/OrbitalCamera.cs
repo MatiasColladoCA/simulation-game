@@ -4,7 +4,7 @@ public partial class OrbitalCamera : Camera3D
 {
 	// --- Configuración (Multiplicadores Relativos) ---
 	// 1.3 = El radio + 30% de aire
-	[Export] public float MinRadiusMultiplier = 1.3f; 
+	[Export] public float MinRadiusMultiplier = 0.3f; 
 	// 5.0 = 5 veces el radio del planeta
 	[Export] public float MaxRadiusMultiplier = 5.0f; 
 	

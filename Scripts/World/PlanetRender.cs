@@ -17,13 +17,19 @@ public partial class PlanetRender : Node3D
 	private float _currentNoiseHeight;
 	private float _lastWaterLevel = -1;
 
-	private bool _isDebugMode = false;
+	private bool _isViewVectorField = false;
+	private bool _isViewPoiField = false;
+
 	private Rid _vectorFieldRid;
 
-	public void Initialize(Rid heightMapRid, Rid vectorMapRid, float radius, float heightMultiplier)
+	// --- REEMPLAZAR FIRMA Y ASIGNACIONES EN PlanetRender.cs ---
+	// public void Initialize(Rid heightMapRid, Rid vectorMapRid, float radius, float heightMultiplier)
+	public void Initialize(Rid heightMapRid, Rid vectorMapRid, PlanetParams config)
 	{
-		_currentRadius = radius;
-		_currentNoiseHeight = heightMultiplier;
+		// _currentRadius = radius;
+		// _currentNoiseHeight = heightMultiplier;
+		_currentRadius = config.Radius;
+		_currentNoiseHeight = config.NoiseHeight;
 
 		// 1. Configurar Material
 		if (_terrainMaterial == null)
@@ -35,8 +41,12 @@ public partial class PlanetRender : Node3D
 		// Uniforms Globales
 		var hMap = new TextureCubemapRD { TextureRdRid = heightMapRid };
 		_terrainMaterial.SetShaderParameter("height_map_gpu", hMap);
-		_terrainMaterial.SetShaderParameter("planet_radius", radius);
-		_terrainMaterial.SetShaderParameter("noise_amplitude", heightMultiplier);
+		
+		// _terrainMaterial.SetShaderParameter("planet_radius", radius);
+		// _terrainMaterial.SetShaderParameter("noise_amplitude", heightMultiplier);
+		_terrainMaterial.SetShaderParameter("planet_radius", config.Radius);
+		_terrainMaterial.SetShaderParameter("noise_amplitude", config.NoiseHeight);
+		
 		_terrainMaterial.SetShaderParameter("water_level_norm", WaterLevel);
 
 		_vectorFieldRid = vectorMapRid;
@@ -48,11 +58,19 @@ public partial class PlanetRender : Node3D
 		if (_patchMesh == null) GeneratePatchMesh();
 
 		// 3. Inicializar Sistema Quadtree
-		InitializeQuadtree(radius);
+		// InitializeQuadtree(radius);
+		InitializeQuadtree(config.Radius);
 
 		// 4. Agua
 		UpdateWaterVisuals(true);
+
+		// VERIFICACIÓN CRÍTICA:
+		var meshInstance = GetNodeOrNull<MeshInstance3D>("PlanetMesh");
+		if (meshInstance != null) {
+			meshInstance.MaterialOverride = _terrainMaterial;
+		}
 	}
+
 
 	private void GeneratePatchMesh()
 	{
@@ -134,15 +152,45 @@ public partial class PlanetRender : Node3D
 		PlanetChunk.CameraPos = cam.GlobalPosition;
 
 		// 3. Actualizar árbol (Split/Merge)
-		foreach (var chunk in _rootChunks) chunk.Update();
-	
-		if (Input.IsActionJustPressed("debug_flow")) // Asegúrate de mapear "F" a "debug_flow" en Project Settings
-		{
-			_isDebugMode = !_isDebugMode;
-			_terrainMaterial.SetShaderParameter("debug_flow", _isDebugMode);
-		}
-	
+		foreach (var chunk in _rootChunks) chunk.Update();	
 	}
+
+
+	public void SetViewVectorField(bool visible)
+	{
+		_isViewVectorField = visible;
+		if (_terrainMaterial != null)
+		{
+			_terrainMaterial.SetShaderParameter("view_vector_field", _isViewVectorField);
+		}
+	}
+
+
+    // --- NUEVO MÉTODO PARA RECIBIR LA TEXTURA ---
+    public void SetInfluenceMap(Rid influenceMapRid)
+    {
+        if (_terrainMaterial == null) return;
+
+        // IMPORTANTE: TextureCubemapRD para que el shader entienda que es un Cubemap
+        var texWrapper = new TextureCubemapRD();
+        texWrapper.TextureRdRid = influenceMapRid;
+
+        _terrainMaterial.SetShaderParameter("influence_texture", texWrapper);
+    }
+
+    public void SetViewPoiField(bool visible)
+    {
+        _isViewPoiField = visible;
+        if (_terrainMaterial != null)
+        {
+            _terrainMaterial.SetShaderParameter("view_poi_field", _isViewPoiField);
+        }
+        // Ya no intentamos crear la textura aquí, se usa la que se pasó en SetInfluenceMap
+        GD.Print($"[PlanetRender] Debug POI: {visible}");
+    }
+
+
+
 
 	private void UpdateWaterVisuals(bool force)
 	{

@@ -1,13 +1,16 @@
-[gd_scene load_steps=13 format=3 uid="uid://bbr5o4fhtiijr"]
+[gd_scene load_steps=16 format=3 uid="uid://bbr5o4fhtiijr"]
 
 [ext_resource type="Script" uid="uid://bdjeo4q4rurl7" path="res://Scripts/SimulationController.cs" id="1_7mycd"]
 [ext_resource type="Script" uid="uid://cfigf47cpsynr" path="res://Scripts/World/PlanetRender.cs" id="1_lquwl"]
 [ext_resource type="RDShaderFile" uid="uid://xnuj6qgxnse5" path="res://Shaders/Compute/simulation_sphere.glsl" id="2_1bvp3"]
+[ext_resource type="RDShaderFile" uid="uid://dw1nnja5i2vvf" path="res://Shaders/Compute/poi_painter.glsl" id="2_efxa6"]
 [ext_resource type="Script" uid="uid://7k5lvwfwfhde" path="res://Scripts/Cameras/OrbitalCamera.cs" id="3_lquwl"]
 [ext_resource type="Script" uid="uid://1pjncvuov0ns" path="res://Scripts/Agents/AgentSystem.cs" id="4_272bh"]
 [ext_resource type="Script" uid="uid://bfrnup5h00og2" path="res://Scripts/World/TerrainBaker.cs" id="5_5vw27"]
 [ext_resource type="RDShaderFile" uid="uid://c3nhofkxnuwaa" path="res://Shaders/Compute/terrain_baker.glsl" id="6_7mycd"]
 [ext_resource type="Script" uid="uid://qpiji7gd2eyk" path="res://Scripts/UI/SimulationUI.cs" id="6_kek77"]
+[ext_resource type="Script" uid="uid://bonirufu680qn" path="res://Scripts/World/EnvironmentManager.cs" id="9_kek77"]
+[ext_resource type="PackedScene" uid="uid://dtj8mcnxoandt" path="res://PoiVisual.tscn" id="10_4c57u"]
 
 [sub_resource type="CapsuleMesh" id="CapsuleMesh_0xm2m"]
 radius = 4.801
@@ -26,12 +29,14 @@ ambient_light_color = Color(0.50140655, 0.5014065, 0.5014065, 1)
 ambient_light_energy = 3.92
 reflected_light_source = 2
 
-[node name="Main" type="Node3D" node_paths=PackedStringArray("Baker", "AgentSys", "PlanetRenderer", "UI")]
+[node name="Main" type="Node3D" node_paths=PackedStringArray("Baker", "AgentSys", "PlanetRenderer", "UI", "Environment")]
 script = ExtResource("1_7mycd")
 Baker = NodePath("TerrainBaker")
 AgentSys = NodePath("AgentSystem")
 PlanetRenderer = NodePath("WorldRenderer")
 UI = NodePath("CanvasLayer")
+Environment = NodePath("EnvironmentManager")
+PoiPainterShader = ExtResource("2_efxa6")
 
 [node name="WorldRenderer" type="Node3D" parent="."]
 script = ExtResource("1_lquwl")
@@ -97,3 +102,7 @@ environment = SubResource("Environment_7mycd")
 transform = Transform3D(0.7071068, -0.5, 0.5, 0, 0.7071068, 0.70710677, -0.7071068, -0.5, 0.5, -324.38684, 324.88275, 40)
 light_indirect_energy = 2.485
 shadow_enabled = true
+
+[node name="EnvironmentManager" type="Node" parent="."]
+script = ExtResource("9_kek77")
+PoiMeshScene = ExtResource("10_4c57u")
