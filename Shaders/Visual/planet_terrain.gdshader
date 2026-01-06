@@ -76,8 +76,8 @@ void fragment() {
 
     // --- TU LÓGICA DE BIOMAS (INTACTA) ---
     float level_water = water_level_norm;
-    float level_beach = water_level_norm + 0.05; 
-    float level_grass = water_level_norm + 0.25; 
+    float level_beach = water_level_norm + 0.7; 
+    float level_grass = water_level_norm + 0.45; 
     float level_rock  = 0.85; 
 
     vec3 final_color;

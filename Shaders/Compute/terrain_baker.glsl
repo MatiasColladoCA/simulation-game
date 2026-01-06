@@ -3,24 +3,18 @@
 
 layout(local_size_x = 32, local_size_y = 32, local_size_z = 1) in;
 
-// Salida 0: Altura (R)
 layout(set = 0, binding = 0, r32f) writeonly uniform imageCube height_map;
-
-// Salida 1: Campo Vectorial
 layout(set = 0, binding = 1, rgba16f) writeonly uniform imageCube vector_field;
-
-// Salida 2: Normal map (RGB = normal en espacio mundo, A libre)
 layout(set = 0, binding = 2, rgba16f) writeonly uniform imageCube normal_map;
-
 
 layout(push_constant) uniform Params {
     float planet_radius;
-    float noise_scale;
-    float noise_height;
+    float noise_scale;  // Usar 1.0 como base
+    float noise_height; // Usar ej. 0.05
     uint resolution;
 } params;
 
-// --- UTILIDADES DE RUIDO (Simplex 3D) ---
+// --- 1. TOOLKIT DE RUIDO (Simplex 3D Optimizado) ---
 vec3 mod289(vec3 x) { return x - floor(x * (1.0 / 289.0)) * 289.0; }
 vec4 mod289(vec4 x) { return x - floor(x * (1.0 / 289.0)) * 289.0; }
 vec4 permute(vec4 x) { return mod289(((x*34.0)+1.0)*x); }
@@ -69,78 +63,142 @@ float snoise(vec3 v) {
   return 42.0 * dot( m*m, vec4( dot(p0,x0), dot(p1,x1), dot(p2,x2), dot(p3,x3) ) );
 }
 
-// --- GENERACIÓN AAA: HYBRID MULTIFRACTAL ---
+// --- 2. FRACTALES DE RUIDO ---
 
-// 1. Ruido Base (FBM Suave) - Para continentes y llanuras
-float fbm_soft(vec3 x, int octaves) {
-    float v = 0.0; float a = 0.5; vec3 shift = vec3(100.0);
-    float freq = 1.0;
+// FBM Standard (Colinas, detalle suelo)
+float fbm(vec3 x, int octaves, float freq, float gain) {
+    float v = 0.0;
+    float a = 0.5;
     for (int i = 0; i < octaves; ++i) {
         v += a * snoise(x * freq);
-        x += shift; 
-        a *= 0.5;
+        x += vec3(12.34); // Shift para evitar artefactos en el origen
         freq *= 2.0;
+        a *= gain;
     }
     return v;
 }
 
-// 2. Ruido Ridged (Picos) - Para cadenas montañosas afiladas
-float ridged_noise(vec3 x, int octaves) {
-    float v = 0.0; float a = 1.0; float freq = 1.0;
-    float prev_n = 1.0;
+// Ridged Multi (Montañas picosas)
+float ridged(vec3 x, int octaves, float freq) {
+    float v = 0.0;
+    float a = 0.5;
     for (int i = 0; i < octaves; ++i) {
         float n = snoise(x * freq);
-        n = 1.0 - abs(n);   // Invierte los valles -> Picos
-        n = n * n;          // Afila los picos (potencia)
-        v += n * a * prev_n; // Escalar por la capa anterior (hace que montañas solo salgan sobre montañas)
-        prev_n = n;
-        a *= 0.5;
+        n = 1.0 - abs(n);
+        n = n * n * n; // Más afilado (potencia cúbica)
+        v += a * n;
         freq *= 2.0;
+        a *= 0.5;
     }
     return v;
 }
 
-// 3. Domain Warping (Deforma el espacio para que no parezca ruido digital)
-vec3 warp(vec3 p) {
-    float q = fbm_soft(p * 0.5, 2);
-    return p + q * 0.3; // Distorsión moderada
+// Billow Noise (Para ríos/cañones - es el inverso del Ridged suave)
+float billow(vec3 x, int octaves, float freq) {
+    float v = 0.0;
+    float a = 0.5;
+    for (int i = 0; i < octaves; ++i) {
+        float n = snoise(x * freq);
+        v += a * abs(n);
+        freq *= 2.0;
+        a *= 0.5;
+    }
+    return v;
 }
 
-// --- FUNCIÓN MAESTRA DE TERRENO ---
-float get_terrain_aaa(vec3 p) {
-    // A. Domain Warping: Rompe la regularidad
-    vec3 warped_p = warp(p * params.noise_scale);
+// --- 3. LÓGICA DE TERRENO AVANZADA ---
 
-    // B. Forma Continental (Baja Frecuencia)
-    // Usamos menos octavas porque queremos formas grandes
-    float continental = fbm_soft(warped_p * 0.5, 3);
+float get_terrain_height(vec3 dir) {
+    // A. Domain Warping (Romper la grilla del ruido)
+    // Esto evita que el ruido se vea alineado y artificial
+    vec3 q = dir * params.noise_scale;
+    vec3 warp_vec = vec3(
+        fbm(q, 2, 0.5, 0.5),
+        fbm(q + vec3(5.2), 2, 0.5, 0.5),
+        fbm(q + vec3(1.3), 2, 0.5, 0.5)
+    );
+    vec3 p = dir * params.noise_scale + warp_vec * 0.15; // 0.15 es la fuerza de distorsión
+
+    // B. Máscara Continental (Forma base del mundo)
+    // Frecuencia muy baja = formas grandes
+    float continent_shape = fbm(p, 4, 1.0, 0.5); 
     
-    // Ajustar el nivel del mar: empujamos valores bajos hacia abajo
-    // Esto crea llanuras oceánicas grandes
-    float base_height = continental; 
-
-    // C. Montañas (Alta Frecuencia)
-    float mountains = ridged_noise(warped_p * 1.5, 4);
-
-    // D. Mezcla Inteligente (Biome Masking)
-    // Solo ponemos montañas si estamos en "Tierra firme" (continental > 0.1)
-    float mountain_mask = smoothstep(0.0, 0.4, continental);
+    // C. Máscara de Montañas (Independiente del continente)
+    // Define DÓNDE habrá montañas si hay tierra
+    float mountain_density = fbm(p + vec3(100.0), 3, 2.0, 0.5);
     
-    // Altura final = Continente + (Montañas * Mascara)
-    // El 0.6 es para controlar qué tan altas son las montañas respecto al continente
-    return base_height + (mountains * mountain_mask * 0.6);
+    // D. Detalle de Terreno (Llanuras/Suelo)
+    // Frecuencia media/alta, amplitud baja.
+    // IMPORTANTE: Esto se aplica en todo el planeta para evitar zonas "lisas" (borrosas)
+    float ground_detail = fbm(p * 5.0, 3, 4.0, 0.5) * 0.05;
+
+    // --- MEZCLA DE BIOMAS ---
+    
+    float h = continent_shape;
+    
+    // Nivel del mar base (ej. 0.0). Ajustamos para definir cuánta agua hay.
+    // Si h > 0.1 es tierra, si no es mar.
+    float sea_level = 0.1;
+    
+    if (h > sea_level) {
+        // --- ESTAMOS EN TIERRA ---
+        
+        // Suavizar la transición costa/tierra
+        float land_factor = smoothstep(sea_level, sea_level + 0.1, h);
+        
+        // 1. Decidir si es Montaña o Llanura
+        // Si mountain_density es alto -> Montaña. Si es bajo -> Llanura.
+        float is_mountain = smoothstep(0.2, 0.6, mountain_density);
+        
+        // Generar montañas reales
+        float mtns = ridged(p, 5, 5.0) * 0.8; // 0.8 es altura máxima montañas
+        
+        // Generar llanuras (suaves pero con ruido)
+        float plains = ground_detail * 2.0; // Poco relieve
+        
+        // Mezclar según la máscara
+        float land_shape = mix(plains, mtns, is_mountain);
+        
+        // Añadir a la base continental
+        h += land_shape * land_factor;
+        
+        // 2. Ríos
+        // Usamos billow noise. Si el valor es muy bajo, cavamos un río.
+        float river_noise = billow(p, 4, 3.0);
+        float river_mask = smoothstep(0.1, 0.15, river_noise); // Canales estrechos
+        
+        // Solo cavar ríos en llanuras (evitar cortar picos de montañas surrealistamente)
+        float river_strength = (1.0 - is_mountain) * 0.5; 
+        
+        // "Excavar" el río invirtiendo la máscara
+        h = mix(h - 0.05, h, clamp(river_mask + (1.0 - river_strength), 0.0, 1.0));
+    } 
+    else {
+        // --- ESTAMOS EN EL MAR ---
+        // Añadir detalle al fondo marino para que no se vea "liso/borroso"
+        // Lecho marino rugoso + fosas oceánicas
+        h += ground_detail; 
+        
+        // Fosas profundas (ruido ridged invertido)
+        float trench = ridged(p, 2, 2.0);
+        if (trench > 0.8) h -= (trench - 0.8) * 0.5;
+    }
+
+    // Normalizar salida para que el shader de fragmentos tenga rango útil
+    return h * 0.5 + 0.5;
 }
 
-// --- CURL NOISE PARA VIENTO (IGUAL QUE ANTES) ---
+// --- 4. CURL NOISE PARA EL AGUA ---
 vec3 curl_noise(vec3 p) {
-    const float e = 0.01;
-    float n1 = snoise(p + vec3(0, e, 0)); float n2 = snoise(p - vec3(0, e, 0));
-    float n3 = snoise(p + vec3(0, 0, e)); float n4 = snoise(p - vec3(0, 0, e));
-    float n5 = snoise(p + vec3(e, 0, 0)); float n6 = snoise(p - vec3(e, 0, 0));
-    float x = n1 - n2; float y = n3 - n4; float z = n5 - n6;
-    return normalize(vec3(y - z, z - x, x - y)); 
+    const float e = 0.1; 
+    vec3 dx = vec3(e, 0.0, 0.0); vec3 dy = vec3(0.0, e, 0.0); vec3 dz = vec3(0.0, 0.0, e);
+    float n_x = snoise(p + dy) - snoise(p - dy);
+    float n_y = snoise(p + dz) - snoise(p - dz);
+    float n_z = snoise(p + dx) - snoise(p - dx);
+    return normalize(vec3(n_x, n_y, n_z));
 }
 
+// Helper de dirección
 vec3 get_direction(uvec3 id, float size) {
     vec2 uv = (vec2(id.xy) + 0.5) / size;
     uv = uv * 2.0 - 1.0;
@@ -161,68 +219,43 @@ void main() {
 
     vec3 dir = get_direction(id, float(params.resolution));
 
-    // 1. CALCULAR ALTURA (tu zona intacta)
-    float n_center = get_terrain_aaa(dir);
-    imageStore(height_map, ivec3(id), vec4(n_center, 0.0, 0.0, 1.0));
+    // 1. ALTURA
+    float h_val = get_terrain_height(dir);
+    imageStore(height_map, ivec3(id), vec4(h_val, 0.0, 0.0, 1.0));
 
-    // 2. SISTEMA DE COORDENADAS LOCALES (común para normales Y flujo)
-    float eps = 1.0 / float(params.resolution);
-    vec3 tangent = (abs(dir.y) > 0.99) ? vec3(1, 0, 0) : vec3(0, 1, 0);
-    vec3 right = normalize(cross(dir, tangent));
-    vec3 up = cross(dir, right);
-
-    // 3. NORMALES AAA (horneadas desde heightmap)
-    {
-        vec3 dir_r = normalize(dir + right * eps);
-        vec3 dir_u = normalize(dir + up * eps);
-        
-        float h_r = get_terrain_aaa(dir_r);
-        float h_u = get_terrain_aaa(dir_u);
-        
-        vec3 p_center = dir * (params.planet_radius + n_center * params.noise_height);
-        vec3 p_r = dir_r * (params.planet_radius + h_r * params.noise_height);
-        vec3 p_u = dir_u * (params.planet_radius + h_u * params.noise_height);
-        
-        vec3 n_world = normalize(cross(p_r - p_center, p_u - p_center));
-        imageStore(normal_map, ivec3(id), vec4(n_world, 1.0));
-    }
-
-    // 4. CAMPO VECTORIAL (tu lógica original intacta)
-    const float sea_level = 0.45;
-    const float macro_eps = 0.08;
-    const float local_eps = 0.01;
+    // 2. NORMALES (Calculadas con delta muy pequeño para capturar detalle fino)
+    float eps = 1.0 / float(params.resolution); 
+    vec3 tangent = normalize(cross(dir, vec3(0,1,0)));
+    if (length(tangent) < 0.001) tangent = normalize(cross(dir, vec3(1,0,0)));
+    vec3 bitangent = normalize(cross(dir, tangent));
     
-    vec3 final_flow;
-    
-    if (n_center < sea_level) {
-        // AGUA: Escape macro
-        float hr = get_terrain_aaa(normalize(dir + right * macro_eps));
-        float hu = get_terrain_aaa(normalize(dir + up * macro_eps));
-        vec3 macro_grad = (hr - n_center) * right + (hu - n_center) * up;
-        float escape_intensity = (sea_level - n_center) * 15.0; 
-        final_flow = macro_grad * escape_intensity;
-    } 
-    else {
-        // TIERRA: Flujo orgánico + evitación montañas
-        vec3 organic_flow = curl_noise(dir * params.noise_scale);
-        
-        float hr = get_terrain_aaa(normalize(dir + right * local_eps));
-        float hu = get_terrain_aaa(normalize(dir + up * local_eps));
-        vec3 local_grad = (hr - n_center) * right + (hu - n_center) * up;
-        
-        float steepness = length(local_grad);
-        float avoidance_factor = smoothstep(0.01, 0.08, steepness);
-        final_flow = mix(organic_flow, -local_grad * 10.0, avoidance_factor);
-    }
+    float h_center = h_val;
+    float h_right  = get_terrain_height(normalize(dir + tangent * eps));
+    float h_up     = get_terrain_height(normalize(dir + bitangent * eps));
 
-    // Proyección tangencial + normalización (tu código original)
-    final_flow = final_flow - dot(final_flow, dir) * dir;
-    float len = length(final_flow);
-    if (len > 0.0001) {
-        final_flow /= len;
-    } else {
-        final_flow = right; 
-    }
+    float r = params.planet_radius;
+    float amp = params.noise_height;
     
-    imageStore(vector_field, ivec3(id), vec4(final_flow, 1.0));
+    vec3 p_c = dir * (r + h_center * amp);
+    vec3 p_r = normalize(dir + tangent * eps) * (r + h_right * amp);
+    vec3 p_u = normalize(dir + bitangent * eps) * (r + h_up * amp);
+
+    vec3 n_geom = normalize(cross(p_r - p_c, p_u - p_c));
+    imageStore(normal_map, ivec3(id), vec4(n_geom, 1.0));
+
+    // 3. FLOW (Mezcla de Curl y Pendiente)
+    vec3 flow_base = curl_noise(dir * params.noise_scale * 4.0);
+    
+    // Gradiente para que el agua "caiga" por montañas
+    vec3 gradient = (tangent * (h_right - h_center) + bitangent * (h_up - h_center)) / eps;
+    float slope = length(gradient);
+    
+    // Si la pendiente es fuerte, el agua cae. Si es plana, fluye orgánicamente.
+    float gravity_factor = smoothstep(0.001, 0.05, slope);
+    vec3 flow_final = mix(flow_base, -normalize(gradient + vec3(0.0001)), gravity_factor);
+    
+    flow_final = flow_final - dot(flow_final, n_geom) * n_geom;
+    flow_final = normalize(flow_final);
+    
+    imageStore(vector_field, ivec3(id), vec4(flow_final, 1.0));
 }
