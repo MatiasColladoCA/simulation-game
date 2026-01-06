@@ -1,4 +1,4 @@
-[gd_scene load_steps=16 format=3 uid="uid://bbr5o4fhtiijr"]
+[gd_scene load_steps=14 format=3 uid="uid://bbr5o4fhtiijr"]
 
 [ext_resource type="Script" uid="uid://bdjeo4q4rurl7" path="res://Scripts/SimulationController.cs" id="1_7mycd"]
 [ext_resource type="Script" uid="uid://cfigf47cpsynr" path="res://Scripts/World/PlanetRender.cs" id="1_lquwl"]
@@ -12,22 +12,13 @@
 [ext_resource type="Script" uid="uid://bonirufu680qn" path="res://Scripts/World/EnvironmentManager.cs" id="9_kek77"]
 [ext_resource type="PackedScene" uid="uid://dtj8mcnxoandt" path="res://PoiVisual.tscn" id="10_4c57u"]
 
+[sub_resource type="SphereMesh" id="SphereMesh_efxa6"]
+radius = 100.0
+height = 200.0
+
 [sub_resource type="CapsuleMesh" id="CapsuleMesh_0xm2m"]
 radius = 4.801
 height = 31.108
-
-[sub_resource type="ProceduralSkyMaterial" id="ProceduralSkyMaterial_1bvp3"]
-
-[sub_resource type="Sky" id="Sky_lquwl"]
-sky_material = SubResource("ProceduralSkyMaterial_1bvp3")
-
-[sub_resource type="Environment" id="Environment_7mycd"]
-background_mode = 2
-sky = SubResource("Sky_lquwl")
-ambient_light_source = 3
-ambient_light_color = Color(0.50140655, 0.5014065, 0.5014065, 1)
-ambient_light_energy = 3.92
-reflected_light_source = 2
 
 [node name="Main" type="Node3D" node_paths=PackedStringArray("Baker", "AgentSys", "PlanetRenderer", "UI", "Environment")]
 script = ExtResource("1_7mycd")
@@ -37,6 +28,14 @@ PlanetRenderer = NodePath("WorldRenderer")
 UI = NodePath("CanvasLayer")
 Environment = NodePath("EnvironmentManager")
 PoiPainterShader = ExtResource("2_efxa6")
+
+[node name="MeshInstance3D2" type="MeshInstance3D" parent="."]
+visible = false
+mesh = SubResource("SphereMesh_efxa6")
+
+[node name="DirectionalLight3D" type="DirectionalLight3D" parent="."]
+transform = Transform3D(0.7071068, 0.5, -0.5, 0, 0.70710677, 0.70710677, 0.7071068, -0.5, 0.5, -324.38684, 324.88275, 40)
+light_bake_mode = 1
 
 [node name="WorldRenderer" type="Node3D" parent="."]
 script = ExtResource("1_lquwl")
@@ -94,14 +93,6 @@ render_target_update_mode = 0
 [node name="Camera3D" type="Camera3D" parent="UI"]
 transform = Transform3D(0.9137583, -0.28726798, 0.28726798, 0, 0.7071068, 0.7071068, -0.40625826, -0.6461247, 0.6461247, 0, 0, 150)
 script = ExtResource("3_lquwl")
-
-[node name="WorldEnvironment" type="WorldEnvironment" parent="UI"]
-environment = SubResource("Environment_7mycd")
-
-[node name="DirectionalLight3D" type="DirectionalLight3D" parent="UI"]
-transform = Transform3D(0.7071068, -0.5, 0.5, 0, 0.7071068, 0.70710677, -0.7071068, -0.5, 0.5, -324.38684, 324.88275, 40)
-light_indirect_energy = 2.485
-shadow_enabled = true
 
 [node name="EnvironmentManager" type="Node" parent="."]
 script = ExtResource("9_kek77")

@@ -119,6 +119,7 @@ public void Update()
         MeshInstance = new MeshInstance3D();
         MeshInstance.Name = $"Chunk_L{LodLevel}";
         MeshInstance.Mesh = BaseMesh;
+        
         MeshInstance.MaterialOverride = ChunkMaterial;
         MeshInstance.CastShadow = GeometryInstance3D.ShadowCastingSetting.On;
         

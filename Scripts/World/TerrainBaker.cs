@@ -29,6 +29,7 @@ public partial class TerrainBaker : Node
 	{
 		public Rid HeightMapRid;
 		public Rid VectorFieldRid;
+		public Rid NormalMapRid; // NUEVO
 		public bool Success;
 	}
 
@@ -76,6 +77,20 @@ public partial class TerrainBaker : Node
 		};
 		var vectorFieldRid = rd.TextureCreate(fmtVectors, new RDTextureView(), new Godot.Collections.Array<byte[]>());
 
+		// Textura de normales (RGB = normal en espacio mundo, A libre)
+		var fmtNormals = new RDTextureFormat {
+			Width = (uint)CubemapResolution,
+			Height = (uint)CubemapResolution,
+			Depth = 1,
+			ArrayLayers = 6,
+			TextureType = RenderingDevice.TextureType.Cube,
+			Format = RenderingDevice.DataFormat.R16G16B16A16Sfloat,
+			UsageBits = RenderingDevice.TextureUsageBits.StorageBit
+					| RenderingDevice.TextureUsageBits.SamplingBit
+					| RenderingDevice.TextureUsageBits.CanCopyFromBit
+		};
+		var normalMapRid = rd.TextureCreate(fmtNormals, new RDTextureView(), new Godot.Collections.Array<byte[]>());
+
 		// 2. Pipeline
 		var bakerSpirv = BakerShaderFile.GetSpirV();
 		var bakerShaderRid = rd.ShaderCreateFromSpirV(bakerSpirv);
@@ -84,8 +99,14 @@ public partial class TerrainBaker : Node
 		// 3. Uniforms
 		var uOutHeight = new RDUniform { UniformType = RenderingDevice.UniformType.Image, Binding = 0 }; uOutHeight.AddId(heightMapRid);
 		var uOutVectors = new RDUniform { UniformType = RenderingDevice.UniformType.Image, Binding = 1 }; uOutVectors.AddId(vectorFieldRid);
-		var bakerSet = rd.UniformSetCreate(new Godot.Collections.Array<RDUniform> { uOutHeight, uOutVectors }, bakerShaderRid, 0);
-
+		// NUEVO: normal map
+		var uOutNormals = new RDUniform { UniformType = RenderingDevice.UniformType.Image, Binding = 2 }; 
+		uOutNormals.AddId(normalMapRid);
+		var bakerSet = rd.UniformSetCreate(
+			new Godot.Collections.Array<RDUniform> { uOutHeight, uOutVectors, uOutNormals },
+			bakerShaderRid,  // ← Shader YA compilado
+			0
+		);
 		// 4. Push Constants
 		// --- CORRECCIÓN: Renombrado de variables locales duplicadas ---
 		// ANTES: var stream = new System.IO.MemoryStream();
@@ -120,7 +141,13 @@ public partial class TerrainBaker : Node
 
 		// --- CORRECCIÓN: Referencias a variables existentes ---
 		// ANTES: return new BakeResult { Success = true, HeightMapRid = h, VectorFieldRid = v };
-		return new BakeResult { Success = true, HeightMapRid = heightMapRid, VectorFieldRid = vectorFieldRid };
+		return new BakeResult {
+			Success = true,
+			HeightMapRid = heightMapRid,
+			VectorFieldRid = vectorFieldRid,
+			// NUEVO: normal map
+			NormalMapRid = normalMapRid
+		};
 		// ------------------------------------------------------
 	}
 

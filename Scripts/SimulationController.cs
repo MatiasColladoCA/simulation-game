@@ -121,7 +121,12 @@ public partial class SimulationController : Node
 		await ToSignal(GetTree(), "process_frame");
 
 		// 7. INICIALIZAR RENDERER DEL PLANETA
-		PlanetRenderer.Initialize(bakeResult.HeightMapRid, bakeResult.VectorFieldRid, _currentConfig);
+		PlanetRenderer.Initialize(
+			bakeResult.HeightMapRid,
+			bakeResult.VectorFieldRid,
+			bakeResult.NormalMapRid,  // NUEVO parámetro
+			_currentConfig
+		);
 
 		// CRÍTICO: Pasar la textura al Material del Renderer
 		PlanetRenderer.SetInfluenceMap(influenceTex);

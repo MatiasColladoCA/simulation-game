@@ -21,10 +21,12 @@ public partial class PlanetRender : Node3D
 	private bool _isViewPoiField = false;
 
 	private Rid _vectorFieldRid;
+	private Rid _normalMapRid;
+
 
 	// --- REEMPLAZAR FIRMA Y ASIGNACIONES EN PlanetRender.cs ---
 	// public void Initialize(Rid heightMapRid, Rid vectorMapRid, float radius, float heightMultiplier)
-	public void Initialize(Rid heightMapRid, Rid vectorMapRid, PlanetParams config)
+	public void Initialize(Rid heightMapRid, Rid vectorMapRid, Rid normalMapRid, PlanetParams config)
 	{
 		// _currentRadius = radius;
 		// _currentNoiseHeight = heightMultiplier;
@@ -52,6 +54,11 @@ public partial class PlanetRender : Node3D
 		_vectorFieldRid = vectorMapRid;
 		var vMap = new TextureCubemapRD { TextureRdRid = vectorMapRid };
 		_terrainMaterial.SetShaderParameter("vector_field_gpu", vMap);
+
+		_normalMapRid = normalMapRid;
+		var nMap = new TextureCubemapRD { TextureRdRid = normalMapRid };
+		_terrainMaterial.SetShaderParameter("normal_map_gpu", nMap);
+
 
 
 		// 2. Generar Mesh Base (Una sola vez)
@@ -106,6 +113,8 @@ public partial class PlanetRender : Node3D
 				st.AddIndex(i + res + 1);
 			}
 		}
+		st.GenerateNormals();
+
 		
 		_patchMesh = st.Commit();
 	}
@@ -166,28 +175,28 @@ public partial class PlanetRender : Node3D
 	}
 
 
-    // --- NUEVO MÉTODO PARA RECIBIR LA TEXTURA ---
-    public void SetInfluenceMap(Rid influenceMapRid)
-    {
-        if (_terrainMaterial == null) return;
+	// --- NUEVO MÉTODO PARA RECIBIR LA TEXTURA ---
+	public void SetInfluenceMap(Rid influenceMapRid)
+	{
+		if (_terrainMaterial == null) return;
 
-        // IMPORTANTE: TextureCubemapRD para que el shader entienda que es un Cubemap
-        var texWrapper = new TextureCubemapRD();
-        texWrapper.TextureRdRid = influenceMapRid;
+		// IMPORTANTE: TextureCubemapRD para que el shader entienda que es un Cubemap
+		var texWrapper = new TextureCubemapRD();
+		texWrapper.TextureRdRid = influenceMapRid;
 
-        _terrainMaterial.SetShaderParameter("influence_texture", texWrapper);
-    }
+		_terrainMaterial.SetShaderParameter("influence_texture", texWrapper);
+	}
 
-    public void SetViewPoiField(bool visible)
-    {
-        _isViewPoiField = visible;
-        if (_terrainMaterial != null)
-        {
-            _terrainMaterial.SetShaderParameter("view_poi_field", _isViewPoiField);
-        }
-        // Ya no intentamos crear la textura aquí, se usa la que se pasó en SetInfluenceMap
-        GD.Print($"[PlanetRender] Debug POI: {visible}");
-    }
+	public void SetViewPoiField(bool visible)
+	{
+		_isViewPoiField = visible;
+		if (_terrainMaterial != null)
+		{
+			_terrainMaterial.SetShaderParameter("view_poi_field", _isViewPoiField);
+		}
+		// Ya no intentamos crear la textura aquí, se usa la que se pasó en SetInfluenceMap
+		GD.Print($"[PlanetRender] Debug POI: {visible}");
+	}
 
 
 

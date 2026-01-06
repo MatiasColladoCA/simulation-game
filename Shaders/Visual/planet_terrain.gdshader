@@ -3,6 +3,8 @@ render_mode specular_schlick_ggx;
 
 // --- UNIFORMS GLOBALES ---
 uniform samplerCube height_map_gpu : filter_linear, repeat_enable; 
+uniform samplerCube normal_map_gpu : filter_linear, repeat_enable; // NUEVO
+
 uniform float planet_radius = 100.0;
 uniform float noise_amplitude = 10.0;
 uniform float water_level_norm = 0.5; 
@@ -38,32 +40,47 @@ varying vec3 v_world_pos;
 
 void vertex() {
     vec2 relative_pos = UV - 0.5;
-    vec3 pos_on_cube = chunk_center + (relative_pos.x * chunk_size * chunk_axis_a) + (relative_pos.y * chunk_size * chunk_axis_b);
+    vec3 pos_on_cube = chunk_center
+        + (relative_pos.x * chunk_size * chunk_axis_a)
+        + (relative_pos.y * chunk_size * chunk_axis_b);
+
     vec3 dir = normalize(pos_on_cube);
-    
+
     float h_val = texture(height_map_gpu, dir).r;
     v_height_norm = h_val;
-    
+
     float final_height = planet_radius + (h_val * noise_amplitude);
     VERTEX = dir * final_height;
+
+    v_dir_local = dir;
+    v_world_pos = VERTEX;
     
-    v_dir_local = dir; 
-    v_world_pos = VERTEX; 
-    NORMAL = dir; 
+    // CRÍTICO: Backup esférico para el motor
+    NORMAL = dir;
 }
+
 
 void fragment() {
     float h = v_height_norm;
 
-    // --- MEZCLA DE BIOMAS (Igual que antes) ---
+    // 1. NORMALES HORNEADAS - ESPACIO LOCAL DEL PLANETA (IMPORTANTE)
+    vec3 n_baked = texture(normal_map_gpu, v_dir_local).xyz;
+    
+    // 2. Normal geométrica base del chunk (estable)
+    vec3 n_geo = normalize(cross(dFdx(v_world_pos), dFdy(v_world_pos)));
+
+    vec3 n_mixed_model = normalize(mix(n_geo, n_baked, 0.95));
+    
+    // 3. BLEND suave para evitar seams
+    NORMAL = mat3(VIEW_MATRIX) * n_mixed_model;
+
+    // --- TU LÓGICA DE BIOMAS (INTACTA) ---
     float level_water = water_level_norm;
     float level_beach = water_level_norm + 0.05; 
     float level_grass = water_level_norm + 0.25; 
     float level_rock  = 0.85; 
-    level_rock = max(level_rock, level_grass + 0.1); 
 
     vec3 final_color;
-
     if (h < level_water) {
         float depth = (level_water - h) * 5.0; 
         final_color = mix(color_beach, color_seabed, clamp(depth, 0.0, 1.0));
@@ -86,13 +103,13 @@ void fragment() {
     }
     else {
         final_color = color_snow;
-        ROUGHNESS = 0.4;
-        SPECULAR = 0.2; 
+        ROUGHNESS = 0.6;  // Menos plástico
+        SPECULAR = 0.1;
     }
 
     vec3 result_color = final_color;
 
-    // --- VISUALIZACIÓN DE VECTORES ---
+    // DEBUG VECTOR FIELD (tu código original)
     if (view_vector_field) {
         vec3 flow = texture(vector_field_gpu, v_dir_local).rgb;
         float static_stripes = dot(v_world_pos, vec3(0.5, 0.5, 0.5));
@@ -104,18 +121,12 @@ void fragment() {
         result_color = mix(result_color, flow_visual, 0.7);
     }
 
-    // --- VISUALIZACIÓN DE POIS (CORREGIDA) ---
     if (view_poi_field) {
         vec4 poi_sample = texture(influence_texture, v_dir_local);
-        
-        // Asignamos el color directo (Magenta o Verde)
         result_color = poi_sample.rgb;
-        
-        // --- AGREGAR ESTA LÍNEA ---
-        // Hacemos que el color emita luz para que no se vea negro en la sombra
-        EMISSION = result_color; 
-        // --------------------------
+        EMISSION = result_color * 0.5;
     }
     
     ALBEDO = result_color;
+    METALLIC = 0.0;
 }

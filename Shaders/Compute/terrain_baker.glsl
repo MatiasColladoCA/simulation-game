@@ -9,6 +9,10 @@ layout(set = 0, binding = 0, r32f) writeonly uniform imageCube height_map;
 // Salida 1: Campo Vectorial
 layout(set = 0, binding = 1, rgba16f) writeonly uniform imageCube vector_field;
 
+// Salida 2: Normal map (RGB = normal en espacio mundo, A libre)
+layout(set = 0, binding = 2, rgba16f) writeonly uniform imageCube normal_map;
+
+
 layout(push_constant) uniform Params {
     float planet_radius;
     float noise_scale;
@@ -157,66 +161,68 @@ void main() {
 
     vec3 dir = get_direction(id, float(params.resolution));
 
-    // --- ZONA INTACTA: GENERACIÓN DE ALTURA ---
-    float n = get_terrain_aaa(dir);
-    imageStore(height_map, ivec3(id), vec4(n, 0.0, 0.0, 1.0));
-    // ------------------------------------------
+    // 1. CALCULAR ALTURA (tu zona intacta)
+    float n_center = get_terrain_aaa(dir);
+    imageStore(height_map, ivec3(id), vec4(n_center, 0.0, 0.0, 1.0));
 
-    // 1. Base ortogonal para muestreo seguro (Evita NaNs)
+    // 2. SISTEMA DE COORDENADAS LOCALES (común para normales Y flujo)
+    float eps = 1.0 / float(params.resolution);
     vec3 tangent = (abs(dir.y) > 0.99) ? vec3(1, 0, 0) : vec3(0, 1, 0);
     vec3 right = normalize(cross(dir, tangent));
     vec3 up = cross(dir, right);
 
-    // 2. Parámetros de Control
-    const float sea_level = 0.45;
-    const float macro_eps = 0.08; // "Vista larga" para ignorar montes submarinos
-    const float local_eps = 0.01; // "Vista corta" para evitar cumbres en tierra
-
-    vec3 final_flow;
-
-    if (n < sea_level) {
-        // --- CAPA DE EDICIÓN: OVERRIDE DE AGUA ---
-        // Ignoramos completamente el Curl Noise aquí.
+    // 3. NORMALES AAA (horneadas desde heightmap)
+    {
+        vec3 dir_r = normalize(dir + right * eps);
+        vec3 dir_u = normalize(dir + up * eps);
         
-        // Muestreamos a gran escala para detectar la masa continental, no la piedra de al lado
+        float h_r = get_terrain_aaa(dir_r);
+        float h_u = get_terrain_aaa(dir_u);
+        
+        vec3 p_center = dir * (params.planet_radius + n_center * params.noise_height);
+        vec3 p_r = dir_r * (params.planet_radius + h_r * params.noise_height);
+        vec3 p_u = dir_u * (params.planet_radius + h_u * params.noise_height);
+        
+        vec3 n_world = normalize(cross(p_r - p_center, p_u - p_center));
+        imageStore(normal_map, ivec3(id), vec4(n_world, 1.0));
+    }
+
+    // 4. CAMPO VECTORIAL (tu lógica original intacta)
+    const float sea_level = 0.45;
+    const float macro_eps = 0.08;
+    const float local_eps = 0.01;
+    
+    vec3 final_flow;
+    
+    if (n_center < sea_level) {
+        // AGUA: Escape macro
         float hr = get_terrain_aaa(normalize(dir + right * macro_eps));
         float hu = get_terrain_aaa(normalize(dir + up * macro_eps));
-        vec3 macro_grad = (hr - n) * right + (hu - n) * up;
-
-        // Vector de escape puro (Uphill macro)
-        // Multiplicamos por la profundidad para que el escape sea violento en el abismo
-        float escape_intensity = (sea_level - n) * 15.0; 
+        vec3 macro_grad = (hr - n_center) * right + (hu - n_center) * up;
+        float escape_intensity = (sea_level - n_center) * 15.0; 
         final_flow = macro_grad * escape_intensity;
     } 
     else {
-        // --- CAPA DE EDICIÓN: TIERRA FIRME ---
+        // TIERRA: Flujo orgánico + evitación montañas
         vec3 organic_flow = curl_noise(dir * params.noise_scale);
         
-        // Gradiente local para evitar montañas
         float hr = get_terrain_aaa(normalize(dir + right * local_eps));
         float hu = get_terrain_aaa(normalize(dir + up * local_eps));
-        vec3 local_grad = (hr - n) * right + (hu - n) * up;
-
-        // Evitar montañas: mezcla según inclinación (Steepness)
+        vec3 local_grad = (hr - n_center) * right + (hu - n_center) * up;
+        
         float steepness = length(local_grad);
         float avoidance_factor = smoothstep(0.01, 0.08, steepness);
-        
-        // En tierra mezclamos: Ruido orgánico + Evitación (Downhill local)
         final_flow = mix(organic_flow, -local_grad * 10.0, avoidance_factor);
     }
 
-    // 3. Proyección Tangencial Final
-    // Forzamos que el vector sea paralelo a la superficie
+    // Proyección tangencial + normalización (tu código original)
     final_flow = final_flow - dot(final_flow, dir) * dir;
-    
-    // 4. Normalización Segura
     float len = length(final_flow);
     if (len > 0.0001) {
         final_flow /= len;
     } else {
-        // Si no hay flujo (zonas planas muertas), forzamos un vector tangente
         final_flow = right; 
     }
-
+    
     imageStore(vector_field, ivec3(id), vec4(final_flow, 1.0));
 }
