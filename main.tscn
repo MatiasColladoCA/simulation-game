@@ -1,4 +1,4 @@
-[gd_scene load_steps=14 format=3 uid="uid://bbr5o4fhtiijr"]
+[gd_scene load_steps=13 format=3 uid="uid://bbr5o4fhtiijr"]
 
 [ext_resource type="Script" uid="uid://bdjeo4q4rurl7" path="res://Scripts/SimulationController.cs" id="1_7mycd"]
 [ext_resource type="Script" uid="uid://cfigf47cpsynr" path="res://Scripts/World/PlanetRender.cs" id="1_lquwl"]
@@ -6,8 +6,8 @@
 [ext_resource type="RDShaderFile" uid="uid://dw1nnja5i2vvf" path="res://Shaders/Compute/poi_painter.glsl" id="2_efxa6"]
 [ext_resource type="Script" uid="uid://7k5lvwfwfhde" path="res://Scripts/Cameras/OrbitalCamera.cs" id="3_lquwl"]
 [ext_resource type="Script" uid="uid://1pjncvuov0ns" path="res://Scripts/Agents/AgentSystem.cs" id="4_272bh"]
-[ext_resource type="Script" uid="uid://bfrnup5h00og2" path="res://Scripts/World/TerrainBaker.cs" id="5_5vw27"]
-[ext_resource type="RDShaderFile" uid="uid://c3nhofkxnuwaa" path="res://Shaders/Compute/terrain_baker.glsl" id="6_7mycd"]
+[ext_resource type="Script" uid="uid://bfrnup5h00og2" path="res://Scripts/World/PlanetBaker.cs" id="5_5vw27"]
+[ext_resource type="RDShaderFile" uid="uid://c3nhofkxnuwaa" path="res://Shaders/Compute/planet_baker.glsl" id="6_7mycd"]
 [ext_resource type="Script" uid="uid://qpiji7gd2eyk" path="res://Scripts/UI/SimulationUI.cs" id="6_kek77"]
 [ext_resource type="Script" uid="uid://bonirufu680qn" path="res://Scripts/World/EnvironmentManager.cs" id="9_kek77"]
 [ext_resource type="PackedScene" uid="uid://dtj8mcnxoandt" path="res://PoiVisual.tscn" id="10_4c57u"]
@@ -16,13 +16,9 @@
 radius = 100.0
 height = 200.0
 
-[sub_resource type="CapsuleMesh" id="CapsuleMesh_0xm2m"]
-radius = 4.801
-height = 31.108
-
 [node name="Main" type="Node3D" node_paths=PackedStringArray("Baker", "AgentSys", "PlanetRenderer", "UI", "Environment")]
 script = ExtResource("1_7mycd")
-Baker = NodePath("TerrainBaker")
+Baker = NodePath("PlanetBaker")
 AgentSys = NodePath("AgentSystem")
 PlanetRenderer = NodePath("WorldRenderer")
 UI = NodePath("CanvasLayer")
@@ -43,11 +39,6 @@ WaterLevel = 0.0
 
 [node name="PlanetMeshVisual" type="MeshInstance3D" parent="WorldRenderer"]
 
-[node name="MeshInstance3D" type="MeshInstance3D" parent="."]
-transform = Transform3D(0.9703188, -0.1363806, 0.1997041, 0.15461086, 0.9848391, -0.07866084, -0.18594857, 0.10720252, 0.97669375, 0, 0, 0)
-visible = false
-mesh = SubResource("CapsuleMesh_0xm2m")
-
 [node name="AgentSystem" type="Node3D" parent="."]
 script = ExtResource("4_272bh")
 ComputeShaderFile = ExtResource("2_1bvp3")
@@ -55,7 +46,7 @@ ComputeShaderFile = ExtResource("2_1bvp3")
 [node name="AgentVisualizer" type="MultiMeshInstance3D" parent="AgentSystem"]
 visible = false
 
-[node name="TerrainBaker" type="Node" parent="."]
+[node name="PlanetBaker" type="Node" parent="."]
 script = ExtResource("5_5vw27")
 BakerShaderFile = ExtResource("6_7mycd")
 

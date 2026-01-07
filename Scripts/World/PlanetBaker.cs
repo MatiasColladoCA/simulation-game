@@ -2,7 +2,7 @@ using Godot;
 using System;
 using System.Threading.Tasks;
 
-public partial class TerrainBaker : Node
+public partial class PlanetBaker : Node
 {
 	// CAMBIO: Se usa la propiedad backing field implícita o se asigna a la propiedad con set privado.
 	public Rid ParamsBuffer { get; private set; } 
@@ -137,7 +137,7 @@ public partial class TerrainBaker : Node
 		// No liberamos bakerSet aquí explícitamente para evitar race conditions si no hay sync, 
 		// pero idealmente deberíamos traquearlo.
 
-		GD.Print($"[TerrainBaker] Baked {CubemapResolution}x{CubemapResolution}");
+		GD.Print($"[PlanetBaker] Baked {CubemapResolution}x{CubemapResolution}");
 
 		// --- CORRECCIÓN: Referencias a variables existentes ---
 		// ANTES: return new BakeResult { Success = true, HeightMapRid = h, VectorFieldRid = v };

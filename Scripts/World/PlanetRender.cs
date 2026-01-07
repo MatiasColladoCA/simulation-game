@@ -37,7 +37,7 @@ public partial class PlanetRender : Node3D
 		if (_terrainMaterial == null)
 		{
 			_terrainMaterial = new ShaderMaterial();
-			_terrainMaterial.Shader = GD.Load<Shader>("res://Shaders/Visual/planet_terrain.gdshader");
+			_terrainMaterial.Shader = GD.Load<Shader>("res://Shaders/Visual/planet_render.gdshader");
 		}
 		
 		// Uniforms Globales

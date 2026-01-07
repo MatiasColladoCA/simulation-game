@@ -5,7 +5,7 @@ using System;
 public partial class SimulationController : Node
 {
 	// Dependencias de Escena (Arrastrar en Editor)
-	[Export] public TerrainBaker Baker;
+	[Export] public PlanetBaker Baker;
 	[Export] public AgentSystem AgentSys;
 	[Export] public PlanetRender PlanetRenderer; // Tu script existente
 	[Export] public SimulationUI UI;

@@ -1,0 +1,14 @@
+[remap]
+
+importer="glsl"
+type="RDShaderFile"
+uid="uid://c3nhofkxnuwaa"
+path="res://.godot/imported/planet_baker.glsl-f377128a1d1405678d1dc76a1660c405.res"
+
+[deps]
+
+source_file="res://Shaders/Compute/planet_baker.glsl"
+dest_files=["res://.godot/imported/planet_baker.glsl-f377128a1d1405678d1dc76a1660c405.res"]
+
+[params]
+
