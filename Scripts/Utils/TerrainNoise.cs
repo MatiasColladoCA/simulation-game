@@ -188,7 +188,7 @@ public static class TerrainNoise
 	}
 
 	// --- API PÚBLICA ---
-	public static float GetTerrainAAA(Vector3 dir, PlanetParams p)
+	public static float GetTerrainAAA(Vector3 dir, PlanetParamsData p)
 	{
 		Vector3 scaledP = dir.Normalized() * p.NoiseScale;
 		Vector3 warpedP = Warp(scaledP);

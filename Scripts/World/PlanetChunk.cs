@@ -6,7 +6,7 @@ public class PlanetChunk
     // --- SEGURIDAD ---
     // Bajamos de 8 a 5. (4^5 = 1024 chunks max por cara, seguro)
     // Cuando funcione, subimos a 6 o 7. 8 es para planetas escala real.
-    private const int MAX_LOD = 2;
+    private const int MAX_LOD = 7;
     // Datos compartidos por todos los chunks (Static)
     public static Mesh BaseMesh; 
     public static Material ChunkMaterial; 

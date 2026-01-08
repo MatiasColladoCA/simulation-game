@@ -1,166 +1,202 @@
 using Godot;
 using System;
-using System.Threading.Tasks;
+using System.Runtime.InteropServices;
 
 public partial class PlanetBaker : Node
 {
-	// CAMBIO: Se usa la propiedad backing field implícita o se asigna a la propiedad con set privado.
+	// Propiedad pública para que el PoiPainter pueda leer los params
 	public Rid ParamsBuffer { get; private set; } 
+	
+	public float PlanetRadius => _cachedParams.Radius;
+	public float NoiseScale => _cachedParams.NoiseScale;
+	public float NoiseHeight => _cachedParams.NoiseHeight;
+	public int CubemapResolution => (int)_cachedParams.Resolution;
+	
+	// Configuración almacenada (Stateful) para compatibilidad
+	private PlanetParamsData _cachedParams;
 
-	[ExportGroup("Baking Settings")]
-	[Export] public RDShaderFile BakerShaderFile;
-	[Export] public float PlanetRadius = 100.0f;
-	[Export] public float NoiseScale = 2.0f;
-	[Export] public float NoiseHeight = 10.0f;
-	[Export] public int CubemapResolution = 1024;
+	// Struct de Stats para lectura
+	[StructLayout(LayoutKind.Sequential)]
+	private struct StatsBufferData { public int MinHeightFixed; public int MaxHeightFixed; }
 
-	private PlanetParams _params;
+	// Constante
+	private const float FIXED_POINT_SCALE = 100000.0f;
 
-	public void SetParams(PlanetParams config)
-	{
-		_params = config;
-		PlanetRadius = _params.Radius;
-		NoiseScale = _params.NoiseScale;
-		NoiseHeight = _params.NoiseHeight;
-		CubemapResolution = (int)_params.Resolution;
-	}
-
+	[StructLayout(LayoutKind.Sequential)]
 	public struct BakeResult
 	{
+		public bool Success;
 		public Rid HeightMapRid;
 		public Rid VectorFieldRid;
-		public Rid NormalMapRid; // NUEVO
-		public bool Success;
+		public Rid NormalMapRid;
+		public float MinHeight;
+		public float MaxHeight;
+		public float HeightRange => MaxHeight - MinHeight;
 	}
 
+	[Export] public RDShaderFile BakerShaderFile;
+
+	// --- CORRECCIÓN 1: Método SetParams para compatibilidad ---
+	public void SetParams(PlanetParamsData config)
+	{
+		_cachedParams = config;
+	}
+
+	// --- CORRECCIÓN 2: Método Bake sin argumentos (usa _cachedParams) ---
 	public BakeResult Bake(RenderingDevice rd)
 	{
 		if (BakerShaderFile == null || rd == null) return new BakeResult { Success = false };
 
-		// --- CORRECCIÓN: Renombrado de stream/writer para evitar conflicto de nombres ---
-		// ANTES: var stream = new System.IO.MemoryStream();
-		// ANTES: using (var writer = new System.IO.BinaryWriter(stream))
-		var bufferStream = new System.IO.MemoryStream();
-		using (var bufferWriter = new System.IO.BinaryWriter(bufferStream))
+		// Desempaquetar configuración desde caché
+		float radius = _cachedParams.Radius;
+		int resolution = (int)_cachedParams.Resolution;
+		float noiseScale = _cachedParams.NoiseScale;
+		float noiseHeight = _cachedParams.NoiseHeight;
+		
+		// --- 1. GESTIÓN DE PARAMS BUFFER (BINDING 4) ---
+		var memStream = new System.IO.MemoryStream();
+		using (var bw = new System.IO.BinaryWriter(memStream))
 		{
-			bufferWriter.Write((float)PlanetRadius);
-			bufferWriter.Write((float)CubemapResolution);
-			bufferWriter.Write((float)NoiseScale);
-			bufferWriter.Write((float)NoiseHeight);
-		}
-		byte[] paramBytes = bufferStream.ToArray();
-		// -------------------------------------------------------------------------------
+			// vec4 noise_settings
+			bw.Write(_cachedParams.NoiseScale);      
+			bw.Write(0.5f);            
+			bw.Write(_cachedParams.MountainRoughness);            
+			bw.Write(4.0f);            
 
-		// --- CORRECCIÓN: Uso de propiedad IsValid sin paréntesis ---
-		// ANTES: if (ParamsBuffer.IsValid) (Esto estaba bien, pero aseguramos consistencia)
-		if (ParamsBuffer.IsValid) 
-		{
-			rd.BufferUpdate(ParamsBuffer, 0, (uint)paramBytes.Length, paramBytes);
-		}
-		else
-		{
-			ParamsBuffer = rd.StorageBufferCreate((uint)paramBytes.Length, paramBytes);
-		}
+			// vec4 curve_params
+			bw.Write(_cachedParams.WeightMultiplier); // .x (Antes era 1.5f a fuego)
+			bw.Write(_cachedParams.OceanFloorLevel); // .y (Antes era 0.15f a fuego)
+			bw.Write(_cachedParams.NoiseHeight);     // .z
+			bw.Write(_cachedParams.Radius);          // .w
+			// --- CORRECCIÓN: Offset de Semilla ---
+			// vec3 global_offset (Antes face_up) + padding
+			bw.Write(_cachedParams.NoiseOffset.X); 
+			bw.Write(_cachedParams.NoiseOffset.Y); 
+			bw.Write(_cachedParams.NoiseOffset.Z); 
+			bw.Write(0.0f); // Padding align vec4
+			// -------------------------------------
 
-		// 1. Crear Texturas
-		var fmtHeight = new RDTextureFormat {
-			Width = (uint)CubemapResolution, Height = (uint)CubemapResolution, Depth = 1, ArrayLayers = 6,
+			// vec3 center_pos + padding
+			bw.Write(0.0f); bw.Write(0.0f); bw.Write(0.0f);
+			bw.Write(0.0f); 
+
+			// vec2 resolution + vec2 offset (packed in vec4)
+			bw.Write((float)resolution); bw.Write((float)resolution);
+			bw.Write(0.0f); bw.Write(0.0f);
+
+			// float uv_scale + padding vec3
+			bw.Write(1.0f); 
+			bw.Write(0.0f); bw.Write(0.0f); bw.Write(0.0f); 
+		}
+		byte[] paramBytes = memStream.ToArray();
+
+		// Limpiar buffer anterior si existe
+		if (ParamsBuffer.IsValid) rd.FreeRid(ParamsBuffer);
+
+		// --- CORRECCIÓN CRÍTICA AQUÍ ---
+		// Usamos UniformBufferCreate porque el shader define 'uniform BakeParams'
+		// Antes usábamos StorageBufferCreate, lo cual es incompatible con UniformType.UniformBuffer
+		ParamsBuffer = rd.UniformBufferCreate((uint)paramBytes.Length, paramBytes); 
+		// --------------------------------
+
+		// --- 2. CREAR TEXTURAS (BINDINGS 0, 1, 2) ---
+		var fmtFloat = new RDTextureFormat {
+			Width = (uint)resolution, Height = (uint)resolution, Depth = 1, ArrayLayers = 6,
 			TextureType = RenderingDevice.TextureType.Cube, Format = RenderingDevice.DataFormat.R32Sfloat,
 			UsageBits = RenderingDevice.TextureUsageBits.StorageBit | RenderingDevice.TextureUsageBits.SamplingBit | RenderingDevice.TextureUsageBits.CanCopyFromBit
 		};
-		var heightMapRid = rd.TextureCreate(fmtHeight, new RDTextureView(), new Godot.Collections.Array<byte[]>());
+		var hMap = rd.TextureCreate(fmtFloat, new RDTextureView(), new Godot.Collections.Array<byte[]>());
 
-		var fmtVectors = new RDTextureFormat {
-			Width = (uint)CubemapResolution, Height = (uint)CubemapResolution, Depth = 1, ArrayLayers = 6,
+		var fmtVector = new RDTextureFormat {
+			Width = (uint)resolution, Height = (uint)resolution, Depth = 1, ArrayLayers = 6,
+			TextureType = RenderingDevice.TextureType.Cube, Format = RenderingDevice.DataFormat.R16G16Sfloat,
+			UsageBits = RenderingDevice.TextureUsageBits.StorageBit | RenderingDevice.TextureUsageBits.SamplingBit
+		};
+		var vMap = rd.TextureCreate(fmtVector, new RDTextureView(), new Godot.Collections.Array<byte[]>());
+
+		var fmtNormal = new RDTextureFormat {
+			Width = (uint)resolution, Height = (uint)resolution, Depth = 1, ArrayLayers = 6,
 			TextureType = RenderingDevice.TextureType.Cube, Format = RenderingDevice.DataFormat.R16G16B16A16Sfloat,
-			UsageBits = RenderingDevice.TextureUsageBits.StorageBit | RenderingDevice.TextureUsageBits.SamplingBit | RenderingDevice.TextureUsageBits.CanCopyFromBit
+			UsageBits = RenderingDevice.TextureUsageBits.StorageBit | RenderingDevice.TextureUsageBits.SamplingBit
 		};
-		var vectorFieldRid = rd.TextureCreate(fmtVectors, new RDTextureView(), new Godot.Collections.Array<byte[]>());
+		var nMap = rd.TextureCreate(fmtNormal, new RDTextureView(), new Godot.Collections.Array<byte[]>());
 
-		// Textura de normales (RGB = normal en espacio mundo, A libre)
-		var fmtNormals = new RDTextureFormat {
-			Width = (uint)CubemapResolution,
-			Height = (uint)CubemapResolution,
-			Depth = 1,
-			ArrayLayers = 6,
-			TextureType = RenderingDevice.TextureType.Cube,
-			Format = RenderingDevice.DataFormat.R16G16B16A16Sfloat,
-			UsageBits = RenderingDevice.TextureUsageBits.StorageBit
-					| RenderingDevice.TextureUsageBits.SamplingBit
-					| RenderingDevice.TextureUsageBits.CanCopyFromBit
-		};
-		var normalMapRid = rd.TextureCreate(fmtNormals, new RDTextureView(), new Godot.Collections.Array<byte[]>());
+		// --- 3. STATS BUFFER (BINDING 3) ---
+		// Este SÍ es StorageBuffer porque el shader dice 'buffer StatsBuffer'
+		int[] initialStats = { int.MaxValue, int.MinValue };
+		byte[] statsBytes = new byte[8];
+		Buffer.BlockCopy(initialStats, 0, statsBytes, 0, 8);
+		var statsBuffer = rd.StorageBufferCreate((uint)statsBytes.Length, statsBytes);
 
-		// 2. Pipeline
-		var bakerSpirv = BakerShaderFile.GetSpirV();
-		var bakerShaderRid = rd.ShaderCreateFromSpirV(bakerSpirv);
-		var bakerPipeline = rd.ComputePipelineCreate(bakerShaderRid);
+		// --- 4. PREPARAR UNIFORMS ---
+		var uHeight = new RDUniform { UniformType = RenderingDevice.UniformType.Image, Binding = 0 }; 
+		uHeight.AddId(hMap);
+		
+		var uNorm = new RDUniform { UniformType = RenderingDevice.UniformType.Image, Binding = 1 }; 
+		uNorm.AddId(nMap);
+		
+		var uVec = new RDUniform { UniformType = RenderingDevice.UniformType.Image, Binding = 2 }; 
+		uVec.AddId(vMap);
+		
+		var uStats = new RDUniform { UniformType = RenderingDevice.UniformType.StorageBuffer, Binding = 3 }; 
+		uStats.AddId(statsBuffer);
 
-		// 3. Uniforms
-		var uOutHeight = new RDUniform { UniformType = RenderingDevice.UniformType.Image, Binding = 0 }; uOutHeight.AddId(heightMapRid);
-		var uOutVectors = new RDUniform { UniformType = RenderingDevice.UniformType.Image, Binding = 1 }; uOutVectors.AddId(vectorFieldRid);
-		// NUEVO: normal map
-		var uOutNormals = new RDUniform { UniformType = RenderingDevice.UniformType.Image, Binding = 2 }; 
-		uOutNormals.AddId(normalMapRid);
-		var bakerSet = rd.UniformSetCreate(
-			new Godot.Collections.Array<RDUniform> { uOutHeight, uOutVectors, uOutNormals },
-			bakerShaderRid,  // ← Shader YA compilado
-			0
+		var uParams = new RDUniform { UniformType = RenderingDevice.UniformType.UniformBuffer, Binding = 4 };
+		uParams.AddId(ParamsBuffer);
+
+		// Pipeline
+		var shaderSpirv = BakerShaderFile.GetSpirV();
+		var shaderRid = rd.ShaderCreateFromSpirV(shaderSpirv);
+		var pipeline = rd.ComputePipelineCreate(shaderRid);
+
+		// Crear Set
+		var uniformSet = rd.UniformSetCreate(
+			new Godot.Collections.Array<RDUniform> { uHeight, uNorm, uVec, uStats, uParams }, 
+			shaderRid, 0
 		);
-		// 4. Push Constants
-		// --- CORRECCIÓN: Renombrado de variables locales duplicadas ---
-		// ANTES: var stream = new System.IO.MemoryStream();
-		// ANTES: var writer = new System.IO.BinaryWriter(stream);
-		var pushStream = new System.IO.MemoryStream();
-		var pushWriter = new System.IO.BinaryWriter(pushStream);
 		
-		pushWriter.Write((float)PlanetRadius);
-		pushWriter.Write((float)NoiseScale);
-		pushWriter.Write((float)NoiseHeight);
-		pushWriter.Write((uint)CubemapResolution);
-		byte[] pushBytes = pushStream.ToArray();
-		// --------------------------------------------------------------
+		if (!uniformSet.IsValid) 
+		{
+			GD.PrintErr("[PlanetBaker] Error al crear UniformSet. Verifica los Bindings.");
+			return new BakeResult { Success = false };
+		}
 
-		// 5. Dispatch
-		var computeList = rd.ComputeListBegin();
-		rd.ComputeListBindComputePipeline(computeList, bakerPipeline);
-		rd.ComputeListBindUniformSet(computeList, bakerSet, 0);
-		rd.ComputeListSetPushConstant(computeList, pushBytes, (uint)pushBytes.Length);
+		// --- 5. DISPATCH ---
+		long computeList = rd.ComputeListBegin();
+		rd.ComputeListBindComputePipeline(computeList, pipeline);
+		rd.ComputeListBindUniformSet(computeList, uniformSet, 0);
 		
-		uint groups = (uint)Mathf.CeilToInt(CubemapResolution / 32.0f);
+		uint groups = (uint)Mathf.CeilToInt(resolution / 8.0f); 
 		rd.ComputeListDispatch(computeList, groups, groups, 6);
 		rd.ComputeListEnd();
 
-		// Limpieza
-		rd.FreeRid(bakerPipeline);
-		rd.FreeRid(bakerShaderRid); 
-		// No liberamos bakerSet aquí explícitamente para evitar race conditions si no hay sync, 
-		// pero idealmente deberíamos traquearlo.
+		// --- 6. LECTURA Y RETORNO ---
+		// rd.Submit();
+		// rd.Sync();
 
-		GD.Print($"[PlanetBaker] Baked {CubemapResolution}x{CubemapResolution}");
+		byte[] outBytes = rd.BufferGetData(statsBuffer);
+		int outMin = BitConverter.ToInt32(outBytes, 0);
+		int outMax = BitConverter.ToInt32(outBytes, 4);
 
-		// --- CORRECCIÓN: Referencias a variables existentes ---
-		// ANTES: return new BakeResult { Success = true, HeightMapRid = h, VectorFieldRid = v };
+		// Limpieza de temporales
+		rd.FreeRid(pipeline);
+		rd.FreeRid(shaderRid);
+		rd.FreeRid(statsBuffer); 
+
+		float realMin = outMin / FIXED_POINT_SCALE;
+		float realMax = outMax / FIXED_POINT_SCALE;
+		
+		if (realMin > realMax) { realMin = 0; realMax = 0; }
+
 		return new BakeResult {
-			Success = true,
-			HeightMapRid = heightMapRid,
-			VectorFieldRid = vectorFieldRid,
-			// NUEVO: normal map
-			NormalMapRid = normalMapRid
+			Success = true, HeightMapRid = hMap, NormalMapRid = nMap, VectorFieldRid = vMap,
+			MinHeight = realMin, MaxHeight = realMax
 		};
-		// ------------------------------------------------------
 	}
 
-	protected override void Dispose(bool disposing)
-	{
-		// --- CORRECCIÓN: Sintaxis IsValid sin paréntesis ---
-		// ANTES: if (_paramsBuffer.IsValid())
-		if (ParamsBuffer.IsValid) 
-		{
-			var rd = RenderingServer.GetRenderingDevice();
-			// Usamos ParamsBuffer (propiedad) para liberar
-			if (rd != null) rd.FreeRid(ParamsBuffer);
-		}
+	// Limpieza al salir
+	protected override void Dispose(bool disposing) {
+		if (ParamsBuffer.IsValid) RenderingServer.GetRenderingDevice()?.FreeRid(ParamsBuffer);
 		base.Dispose(disposing);
 	}
 }

@@ -4,11 +4,11 @@ using System.Collections.Generic;
 public partial class PlanetRender : Node3D
 {
 	// LOD Settings
-	[Export] public int PatchResolution = 16; // Resolución de cada parche (16x16 o 32x32)
+	[Export] public int PatchResolution = 32; // Resolución de cada parche (16x16 o 32x32)
 	[Export(PropertyHint.Range, "0.0, 1.0")] public float WaterLevel = 0.45f; 
 
 	private Mesh _patchMesh; // Malla base reutilizable
-	private ShaderMaterial _terrainMaterial;
+	private ShaderMaterial _planetMaterial;
 	private PlanetChunk[] _rootChunks; // Las 6 caras del cubo
 	private MeshInstance3D _waterMesh;
 
@@ -26,7 +26,7 @@ public partial class PlanetRender : Node3D
 
 	// --- REEMPLAZAR FIRMA Y ASIGNACIONES EN PlanetRender.cs ---
 	// public void Initialize(Rid heightMapRid, Rid vectorMapRid, float radius, float heightMultiplier)
-	public void Initialize(Rid heightMapRid, Rid vectorMapRid, Rid normalMapRid, PlanetParams config)
+	public void Initialize(Rid heightMapRid, Rid vectorMapRid, Rid normalMapRid, PlanetParamsData config)
 	{
 		// _currentRadius = radius;
 		// _currentNoiseHeight = heightMultiplier;
@@ -34,30 +34,52 @@ public partial class PlanetRender : Node3D
 		_currentNoiseHeight = config.NoiseHeight;
 
 		// 1. Configurar Material
-		if (_terrainMaterial == null)
+		// 1. Configurar Material
+		if (_planetMaterial == null)
 		{
-			_terrainMaterial = new ShaderMaterial();
-			_terrainMaterial.Shader = GD.Load<Shader>("res://Shaders/Visual/planet_render.gdshader");
+			_planetMaterial = new ShaderMaterial();
+			_planetMaterial.Shader = GD.Load<Shader>("res://Shaders/Visual/planet_render.gdshader");
 		}
 		
-		// Uniforms Globales
+		// 2. TEXTURAS (GPU)
+		// Nota: TextureCubemapRD es vital para que Godot entienda RIDs de Vulkan
 		var hMap = new TextureCubemapRD { TextureRdRid = heightMapRid };
-		_terrainMaterial.SetShaderParameter("height_map_gpu", hMap);
-		
-		// _terrainMaterial.SetShaderParameter("planet_radius", radius);
-		// _terrainMaterial.SetShaderParameter("noise_amplitude", heightMultiplier);
-		_terrainMaterial.SetShaderParameter("planet_radius", config.Radius);
-		_terrainMaterial.SetShaderParameter("noise_amplitude", config.NoiseHeight);
-		
-		_terrainMaterial.SetShaderParameter("water_level_norm", WaterLevel);
+		_planetMaterial.SetShaderParameter("height_map_gpu", hMap);
 
-		_vectorFieldRid = vectorMapRid;
 		var vMap = new TextureCubemapRD { TextureRdRid = vectorMapRid };
-		_terrainMaterial.SetShaderParameter("vector_field_gpu", vMap);
+		_planetMaterial.SetShaderParameter("vector_field_gpu", vMap);
 
-		_normalMapRid = normalMapRid;
 		var nMap = new TextureCubemapRD { TextureRdRid = normalMapRid };
-		_terrainMaterial.SetShaderParameter("normal_map_gpu", nMap);
+		_planetMaterial.SetShaderParameter("normal_map_gpu", nMap);
+
+		// 3. PARÁMETROS FÍSICOS CONSTANTES
+		_planetMaterial.SetShaderParameter("planet_radius", config.Radius);
+		
+		// ELIMINADO: "noise_amplitude" (El shader ya lee altura real en metros del canal R)
+		// ELIMINADO: "water_level_norm" (El shader espera metros absolutos)
+		
+		// Inicialización segura de valores absolutos (se sobreescribirán en SetBiomeLevels)
+		_planetMaterial.SetShaderParameter("min_height_absolute", 0.0f);
+		_planetMaterial.SetShaderParameter("max_height_absolute", config.NoiseHeight);
+
+		// Uniforms Globales
+		// var hMap = new TextureCubemapRD { TextureRdRid = heightMapRid };
+		// _planetMaterial.SetShaderParameter("height_map_gpu", hMap);
+		
+		// _planetMaterial.SetShaderParameter("planet_radius", radius);
+		// _planetMaterial.SetShaderParameter("noise_amplitude", heightMultiplier);
+		// _planetMaterial.SetShaderParameter("planet_radius", config.Radius);
+		// _planetMaterial.SetShaderParameter("noise_amplitude", config.NoiseHeight);
+		
+		// _planetMaterial.SetShaderParameter("water_level_norm", WaterLevel);
+
+		// _vectorFieldRid = vectorMapRid;
+		// var vMap = new TextureCubemapRD { TextureRdRid = vectorMapRid };
+		// _planetMaterial.SetShaderParameter("vector_field_gpu", vMap);
+
+		// _normalMapRid = normalMapRid;
+		// var nMap = new TextureCubemapRD { TextureRdRid = normalMapRid };
+		// _planetMaterial.SetShaderParameter("normal_map_gpu", nMap);
 
 
 
@@ -74,7 +96,7 @@ public partial class PlanetRender : Node3D
 		// VERIFICACIÓN CRÍTICA:
 		var meshInstance = GetNodeOrNull<MeshInstance3D>("PlanetMesh");
 		if (meshInstance != null) {
-			meshInstance.MaterialOverride = _terrainMaterial;
+			meshInstance.MaterialOverride = _planetMaterial;
 		}
 	}
 
@@ -129,7 +151,7 @@ public partial class PlanetRender : Node3D
 
 		// Configurar estáticos de la clase Chunk
 		PlanetChunk.BaseMesh = _patchMesh;
-		PlanetChunk.ChunkMaterial = _terrainMaterial;
+		PlanetChunk.ChunkMaterial = _planetMaterial;
 		PlanetChunk.Radius = radius;
 		PlanetChunk.RootNode = this;
 
@@ -168,31 +190,49 @@ public partial class PlanetRender : Node3D
 	public void SetViewVectorField(bool visible)
 	{
 		_isViewVectorField = visible;
-		if (_terrainMaterial != null)
+		if (_planetMaterial != null)
 		{
-			_terrainMaterial.SetShaderParameter("view_vector_field", _isViewVectorField);
+			_planetMaterial.SetShaderParameter("view_vector_field", _isViewVectorField);
 		}
 	}
 
 
-	// --- NUEVO MÉTODO PARA RECIBIR LA TEXTURA ---
-	public void SetInfluenceMap(Rid influenceMapRid)
+	// // --- NUEVO MÉTODO PARA RECIBIR LA TEXTURA ---
+	// public void SetInfluenceMap(Rid influenceMapRid)
+	// {
+	// 	if (_planetMaterial == null) return;
+
+	// 	// IMPORTANTE: TextureCubemapRD para que el shader entienda que es un Cubemap
+	// 	var texWrapper = new TextureCubemapRD();
+	// 	texWrapper.TextureRdRid = influenceMapRid;
+
+	// 	_planetMaterial.SetShaderParameter("influence_texture", texWrapper);
+	// }
+
+	// Este método lo llama SimulationController.cs en el paso 5 del _Ready
+	public void SetBiomeLevels(float waterLevelAbs, float snowLevelAbs, float minHeight, float maxHeight)
 	{
-		if (_terrainMaterial == null) return;
+		if (_planetMaterial == null) return;
 
-		// IMPORTANTE: TextureCubemapRD para que el shader entienda que es un Cubemap
-		var texWrapper = new TextureCubemapRD();
-		texWrapper.TextureRdRid = influenceMapRid;
+		_planetMaterial.SetShaderParameter("water_level", waterLevelAbs);
+		_planetMaterial.SetShaderParameter("snow_level", snowLevelAbs);
+		_planetMaterial.SetShaderParameter("min_height_absolute", minHeight);
+		_planetMaterial.SetShaderParameter("max_height_absolute", maxHeight);
+	}
 
-		_terrainMaterial.SetShaderParameter("influence_texture", texWrapper);
+	public void SetInfluenceMap(Rid influenceRid)
+	{
+		if (_planetMaterial == null) return;
+		var iMap = new TextureCubemapRD { TextureRdRid = influenceRid };
+		_planetMaterial.SetShaderParameter("influence_texture", iMap);
 	}
 
 	public void SetViewPoiField(bool visible)
 	{
 		_isViewPoiField = visible;
-		if (_terrainMaterial != null)
+		if (_planetMaterial != null)
 		{
-			_terrainMaterial.SetShaderParameter("view_poi_field", _isViewPoiField);
+			_planetMaterial.SetShaderParameter("view_poi_field", _isViewPoiField);
 		}
 		// Ya no intentamos crear la textura aquí, se usa la que se pasó en SetInfluenceMap
 		GD.Print($"[PlanetRender] Debug POI: {visible}");
@@ -204,7 +244,7 @@ public partial class PlanetRender : Node3D
 	private void UpdateWaterVisuals(bool force)
 	{
 		_lastWaterLevel = WaterLevel;
-		if (_terrainMaterial != null) _terrainMaterial.SetShaderParameter("water_level_norm", WaterLevel);
+		if (_planetMaterial != null) _planetMaterial.SetShaderParameter("water_level_norm", WaterLevel);
 
 		float r = _currentRadius + (_currentNoiseHeight * WaterLevel);
 		
@@ -225,4 +265,24 @@ public partial class PlanetRender : Node3D
 			s.Radius = r; s.Height = r * 2;
 		}
 	}
+
+
+	// Añadir dentro de PlanetRender.cs
+	public void ApplyBiomeData(PlanetBiomeData biome)
+	{
+		if (_planetMaterial == null) return;
+
+		// Inyectar Paleta de Colores
+		_planetMaterial.SetShaderParameter("color_deep_sea", biome.DeepSeaColor);
+		_planetMaterial.SetShaderParameter("color_shallow", biome.ShallowColor);
+		_planetMaterial.SetShaderParameter("color_beach", biome.BeachColor);
+		_planetMaterial.SetShaderParameter("color_grass", biome.GrassColor);
+		_planetMaterial.SetShaderParameter("color_rock", biome.RockColor);
+		_planetMaterial.SetShaderParameter("color_snow", biome.SnowColor);
+
+		// Inyectar Configuración Visual
+		_planetMaterial.SetShaderParameter("ocean_depth_color_range", biome.OceanDepthMultipler);
+		// Si añades roughness al shader como uniform, asígnalo aquí también
+	}
+	
 }

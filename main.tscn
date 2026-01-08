@@ -1,4 +1,4 @@
-[gd_scene load_steps=13 format=3 uid="uid://bbr5o4fhtiijr"]
+[gd_scene load_steps=14 format=3 uid="uid://bbr5o4fhtiijr"]
 
 [ext_resource type="Script" uid="uid://bdjeo4q4rurl7" path="res://Scripts/SimulationController.cs" id="1_7mycd"]
 [ext_resource type="Script" uid="uid://cfigf47cpsynr" path="res://Scripts/World/PlanetRender.cs" id="1_lquwl"]
@@ -16,6 +16,10 @@
 radius = 100.0
 height = 200.0
 
+[sub_resource type="SphereMesh" id="SphereMesh_dg77c"]
+radius = 100.0
+height = 200.0
+
 [node name="Main" type="Node3D" node_paths=PackedStringArray("Baker", "AgentSys", "PlanetRenderer", "UI", "Environment")]
 script = ExtResource("1_7mycd")
 Baker = NodePath("PlanetBaker")
@@ -24,6 +28,8 @@ PlanetRenderer = NodePath("WorldRenderer")
 UI = NodePath("CanvasLayer")
 Environment = NodePath("EnvironmentManager")
 PoiPainterShader = ExtResource("2_efxa6")
+GlobalHumidity = 0.304
+GlobalTemperature = 0.839
 
 [node name="MeshInstance3D2" type="MeshInstance3D" parent="."]
 visible = false
@@ -35,9 +41,10 @@ light_bake_mode = 1
 
 [node name="WorldRenderer" type="Node3D" parent="."]
 script = ExtResource("1_lquwl")
-WaterLevel = 0.0
+WaterLevel = 0.2
 
 [node name="PlanetMeshVisual" type="MeshInstance3D" parent="WorldRenderer"]
+mesh = SubResource("SphereMesh_dg77c")
 
 [node name="AgentSystem" type="Node3D" parent="."]
 script = ExtResource("4_272bh")

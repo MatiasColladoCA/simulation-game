@@ -10,23 +10,41 @@ public partial class PoiPainter : RefCounted
 	public PoiPainter(RenderingDevice rd, RDShaderFile shaderFile)
 	{
 		_rd = rd;
-		_shader = _rd.ShaderCreateFromSpirV(shaderFile.GetSpirV());
+		var spirv = shaderFile.GetSpirV();
+		_shader = _rd.ShaderCreateFromSpirV(spirv);
 		_pipeline = _rd.ComputePipelineCreate(_shader);
 	}
 
-	// --- CORRECCIÓN: Tipo de dato uint para coincidir con PlanetParams ---
-	// ANTES: public void PaintInfluence(..., int resolution)
 	public void PaintInfluence(Rid influenceTextureRid, Rid poiBufferRid, Rid paramsBufferRid, uint resolution)
 	{
 		// 1. Preparación de Uniformes
-		var uniformParams = new RDUniform { UniformType = RenderingDevice.UniformType.StorageBuffer, Binding = 0 };
+		
+		// CORRECCIÓN CRÍTICA: El Baker crea esto como UniformBuffer (std140), no StorageBuffer.
+		// Si usas StorageBuffer aquí, Vulkan rechaza el set porque el recurso tiene otro usage bit.
+		var uniformParams = new RDUniform { 
+			UniformType = RenderingDevice.UniformType.UniformBuffer, 
+			Binding = 0 
+		};
 		uniformParams.AddId(paramsBufferRid);
 
-		var uniformPois = new RDUniform { UniformType = RenderingDevice.UniformType.StorageBuffer, Binding = 1 };
+		var uniformPois = new RDUniform { 
+			UniformType = RenderingDevice.UniformType.StorageBuffer, 
+			Binding = 1 
+		};
 		uniformPois.AddId(poiBufferRid);
 
-		var uniformTex = new RDUniform { UniformType = RenderingDevice.UniformType.Image, Binding = 2 };
+		var uniformTex = new RDUniform { 
+			UniformType = RenderingDevice.UniformType.Image, 
+			Binding = 2 
+		};
 		uniformTex.AddId(influenceTextureRid);
+
+		// Validar que los recursos sean válidos antes de crear el set
+		if (!paramsBufferRid.IsValid || !poiBufferRid.IsValid || !influenceTextureRid.IsValid)
+		{
+			GD.PrintErr("[PoiPainter] Recursos inválidos. Abortando dispatch.");
+			return;
+		}
 
 		Rid uniformSet = _rd.UniformSetCreate(new Godot.Collections.Array<RDUniform> 
 		{ 
@@ -35,7 +53,13 @@ public partial class PoiPainter : RefCounted
 			uniformTex 
 		}, _shader, 0);
 
-		// 2. Despacho de Cómputo
+		if (!uniformSet.IsValid) 
+		{
+			GD.PrintErr("[PoiPainter] Error creando UniformSet.");
+			return;
+		}
+
+		// 2. Despacho
 		long computeList = _rd.ComputeListBegin();
 		_rd.ComputeListBindComputePipeline(computeList, _pipeline);
 		_rd.ComputeListBindUniformSet(computeList, uniformSet, 0);
@@ -44,17 +68,10 @@ public partial class PoiPainter : RefCounted
 		_rd.ComputeListDispatch(computeList, groups, groups, 6u); 
 
 		_rd.ComputeListEnd();
-		
-		// Nota: Submit/Sync debería ser manejado por el orquestador si se encadenan pases,
-		// pero se mantiene aquí según el snippet original.
-		// _rd.Submit();
-		// _rd.Sync();
 	}
 
 	public new void Dispose()
 	{
-		// --- CORRECCIÓN: Propiedad IsValid sin paréntesis ---
-		// ANTES: if (_shader.IsValid())
 		if (_shader.IsValid) _rd.FreeRid(_shader);
 	}
 }

@@ -1,161 +1,308 @@
 using Godot;
-using System.Threading.Tasks;
-using System;
+using System; // Necesario para Buffer.BlockCopy
+using System.Runtime.InteropServices;
+
 
 public partial class SimulationController : Node
 {
-	// Dependencias de Escena (Arrastrar en Editor)
+	// --- DEPENDENCIAS DE ESCENA ---
 	[Export] public PlanetBaker Baker;
 	[Export] public AgentSystem AgentSys;
-	[Export] public PlanetRender PlanetRenderer; // Tu script existente
+	[Export] public PlanetRender PlanetRenderer;
 	[Export] public SimulationUI UI;
 	[Export] public EnvironmentManager Environment;
-
 	[Export] public RDShaderFile PoiPainterShader;
-	private PoiPainter _poiPainter;
 
+	// --- CONFIGURACIÓN DE SEMILLA ---
+	[ExportGroup("Simulation Settings")]
+	[Export] public int WorldSeed = 1111;
+	[Export] public bool RandomizeSeed = true;
+
+	// --- BIOMA (VISUAL) ---
+	[ExportGroup("Visuals DNA")]
+	[Export] public PlanetBiomeData SpecificBiome; 
+	[Export] public bool RandomizeBiomeOnStart = true; 
+
+	// --- ADN DE LA SIMULACIÓN (NIVELES) ---
+	[ExportGroup("Simulation DNA")]
+	[Export(PropertyHint.Range, "0,1")] public float GlobalHumidity = 0.5f;   // Controla nivel del mar
+	[Export(PropertyHint.Range, "0,1")] public float GlobalTemperature = 0.5f; // Controla nieve/hielo
+
+	// --- VARIABLES INTERNAS ---
+	private PoiPainter _poiPainter;
 	private RenderingDevice _rd;
 	private bool _isRunning = false;
-
-	// VIEWS
-	private bool _isViewVectorField = false;
 	private bool _isViewPoiField = false;
-
-
+	private bool _isViewVectorField = false;
 	private LineEdit _consoleInput;
 
-	private PlanetParams _currentConfig = new PlanetParams {
-		Radius = 100.0f,
-		NoiseScale = 1.0f,
-		NoiseHeight = 25.0f,
-		Resolution = 512
-	};
 
-	// --- REEMPLAZAR EL MÉTODO _Ready COMPLETO ---
+	
+	// Configuración actual de generación
+	private PlanetParamsData _currentConfig;
+
+	// Buffer en GPU para los parámetros (Binding 4)
+	private Rid _paramsBuffer; 
+
+	// Propiedades públicas
+	public float CurrentWaterLevel { get; private set; }
+	public float CurrentSnowLevel { get; private set; }
+
 	public override async void _Ready()
 	{
-		// 1. Obtener RD Global
 		_rd = RenderingServer.GetRenderingDevice();
 		
-		// Validar dependencias críticas
 		if (Baker == null || AgentSys == null || PlanetRenderer == null || UI == null || Environment == null || PoiPainterShader == null)
 		{
-			GD.PrintErr("[SimController] Faltan nodos o recursos asignados en el Inspector.");
+			GD.PrintErr("[SimController] Faltan dependencias en el Inspector.");
 			return;
 		}
 
-		// Instanciar Painter
 		_poiPainter = new PoiPainter(_rd, PoiPainterShader);
 
-		// Configurar Baker
+		// ---------------------------------------------------------
+		// 0. GENERACIÓN DE SEED Y OFFSET
+		// ---------------------------------------------------------
+		if (RandomizeSeed)
+		{
+			WorldSeed = (int)DateTime.Now.Ticks;
+			GD.Print($"[Sim] Random Seed Generated: {WorldSeed}");
+		}
+
+		var rng = new RandomNumberGenerator();
+		rng.Seed = (ulong)WorldSeed;
+		
+		// Offset grande para evitar simetría en el origen
+		Vector3 seedOffset = new Vector3(
+			rng.RandfRange(-10000.0f, 10000.0f),
+			rng.RandfRange(-10000.0f, 10000.0f),
+			rng.RandfRange(-10000.0f, 10000.0f)
+		);
+
+		// ---------------------------------------------------------
+		// 1. CONFIGURACIÓN DEL PLANETA (ADN FÍSICO)
+		// ---------------------------------------------------------
+		// Aquí definimos los parámetros para el estilo "Lague"
+		_currentConfig = new PlanetParamsData {
+			Radius = 100.0f,
+			Resolution = 512, // Usa 256 si va lento
+			NoiseOffset = seedOffset,
+
+			// A. RUIDO BASE (Forma de continentes)
+			NoiseScale = 0.8f,       // Bajo = Continentes grandes. Alto = Islas pequeñas.
+			NoiseHeight = 40.0f,     // Amplitud máxima de montañas
+			
+			// B. PARÁMETROS DE ESCULPIDO (Computer Shader)
+			OceanFloorLevel = 0.45f,   // 0.0 a 1.0. Cuanto más bajo, más tierra.
+			MountainRoughness = 2.0f,  // Controla la lacunaridad o detalle fino
+			WeightMultiplier = 1.8f    // Fuerza de las montañas
+		};
+
+		// ---------------------------------------------------------
+		// 2. ENVIAR DATOS A LA GPU (Binding 4)
+		// ---------------------------------------------------------
+		// Inicializamos el buffer si el Baker no lo ha hecho, o usamos el del Baker.
+		// Asumo aquí que SimulationController gestiona la actualización.
+		UpdateShaderBuffer();
+
+		// Pasamos la config (metadata) al Baker por si la necesita en C#
 		Baker.SetParams(_currentConfig);
 
-		// 2. BAKE DEL TERRENO (GPU)
-		var bakeResult = Baker.Bake(_rd);
+		// ---------------------------------------------------------
+		// 3. BAKE DEL TERRENO (GPU EXECUTION)
+		// ---------------------------------------------------------
+		// Asegúrate de que Baker use el buffer que acabamos de actualizar (Binding 4)
+		var bakeResult = Baker.Bake(_rd); 
+		
 		if (!bakeResult.Success) 
 		{
 			GD.PrintErr("[SimController] Falló el Bake del terreno.");
 			return;
 		}
 
-		// 3. INICIALIZAR ENTORNO (POIs y Visuales)
+		// --- DEBUG VITAL ---
+		GD.Print($"[DEBUG BAKE] Min: {bakeResult.MinHeight}, Max: {bakeResult.MaxHeight}");
+		
+		if (Mathf.IsEqualApprox(bakeResult.MaxHeight, 0) && Mathf.IsEqualApprox(bakeResult.MinHeight, 0))
+		{
+			 GD.PrintErr("[ALERTA] El planeta es plano. Verifica que UpdateShaderBuffer() se esté llamando antes del Dispatch.");
+		}
+
+		// ---------------------------------------------------------
+		// 4. LÓGICA DE NIVELES (CPU)
+		// ---------------------------------------------------------
+		float realMin = bakeResult.MinHeight;
+		float realMax = bakeResult.MaxHeight;
+		float realRange = bakeResult.HeightRange;
+
+		// Calcular niveles reales basados en sliders globales
+		float waterPercent = Mathf.Ease(GlobalHumidity, 0.4f); 
+		CurrentWaterLevel = realMin + (realRange * waterPercent);
+
+		float snowPercent = Mathf.Lerp(0.95f, 0.05f, GlobalTemperature);
+		CurrentSnowLevel = realMin + (realRange * snowPercent);
+
+		// Evitar que la nieve esté bajo el agua
+		if (CurrentSnowLevel < CurrentWaterLevel) CurrentSnowLevel = CurrentWaterLevel + 1.0f;
+
+		GD.Print($"[Sim] Logic: Water@{CurrentWaterLevel:F2} | Snow@{CurrentSnowLevel:F2}");
+
+		// ---------------------------------------------------------
+		// 5. SELECCIÓN DE ADN VISUAL (BIOMA)
+		// ---------------------------------------------------------
+		PlanetBiomeData currentBiomeData;
+
+		if (RandomizeBiomeOnStart)
+		{
+			currentBiomeData = PlanetBiomeData.GenerateRandom();
+			GD.Print("[Sim] Generado Bioma Procedural.");
+		}
+		else if (SpecificBiome != null)
+		{
+			currentBiomeData = SpecificBiome;
+		}
+		else
+		{
+			currentBiomeData = new PlanetBiomeData(); // Default
+		}
+
+		// ---------------------------------------------------------
+		// 6. INICIALIZAR SUBSISTEMAS
+		// ---------------------------------------------------------
 		Environment.Initialize(_rd, bakeResult.HeightMapRid, bakeResult.VectorFieldRid, _currentConfig);
 
+		// Esperar un frame para asegurar texturas
 		await ToSignal(GetTree(), "process_frame");
 
-		// 4. CREAR TEXTURA DE INFLUENCIA (CORRECCIÓN CRÍTICA: Primero creamos, luego asignamos)
-		
+		// Crear Textura de Influencia (POI System)
 		var fmt = new RDTextureFormat
 		{
-			TextureType = RenderingDevice.TextureType.Cube, // <--- OBLIGATORIO: Tipo Cubo
+			TextureType = RenderingDevice.TextureType.Cube,
 			Width = (uint)_currentConfig.Resolution,
 			Height = (uint)_currentConfig.Resolution,
 			Depth = 1,
-			ArrayLayers = 6, // <--- OBLIGATORIO: 6 Caras
+			ArrayLayers = 6,
 			Format = RenderingDevice.DataFormat.R16G16B16A16Sfloat,
-			// UsageBits: Storage (Compute), Sampling (Visual Shader), CanCopy (Debug/Internal)
 			UsageBits = RenderingDevice.TextureUsageBits.StorageBit | 
 						RenderingDevice.TextureUsageBits.SamplingBit | 
 						RenderingDevice.TextureUsageBits.CanCopyFromBit |
 						RenderingDevice.TextureUsageBits.CanCopyToBit
 		};
-
-		var view = new RDTextureView
-		{
-			FormatOverride = RenderingDevice.DataFormat.R16G16B16A16Sfloat,
-			SwizzleR = RenderingDevice.TextureSwizzle.Identity,
-			SwizzleG = RenderingDevice.TextureSwizzle.Identity,
-			SwizzleB = RenderingDevice.TextureSwizzle.Identity,
-			SwizzleA = RenderingDevice.TextureSwizzle.Identity
-		};
-
-		// Crear la textura
+		
+		// Crear textura vacía
+		var view = new RDTextureView { FormatOverride = RenderingDevice.DataFormat.R16G16B16A16Sfloat };
 		Rid influenceTex = _rd.TextureCreate(fmt, view, new Godot.Collections.Array<byte[]>());
 
-		if (!_rd.TextureIsValid(influenceTex))
+		if (_rd.TextureIsValid(influenceTex))
 		{
-			GD.PrintErr("[SimController] ERROR FATAL: No se pudo crear la textura de influencia.");
-			return;
+			 _rd.TextureClear(influenceTex, new Color(0, 0, 0, 0), 0, 1, 0, 6);
+			 Environment.SetInfluenceTexture(influenceTex);
 		}
 
-		// LIMPIEZA INICIAL: Borrar basura de memoria (opcional pero recomendado)
-		// Limpiamos con negro transparente o el color de fondo deseado
-		_rd.TextureClear(influenceTex, new Color(0, 0, 0, 0), 0, 1, 0, 6);
-
-		// 5. VINCULAR A SISTEMAS
-		Environment.SetInfluenceTexture(influenceTex);
-		
-		// Inicializar Agentes (ahora que el entorno tiene la textura lista)
+		// ---------------------------------------------------------
+		// 7. INICIALIZAR AGENTES Y RENDERER
+		// ---------------------------------------------------------
 		AgentSys.Initialize(_rd, Environment, _currentConfig); 
 
-		// 6. PINTAR INFLUENCIA INICIAL
-		_poiPainter.PaintInfluence(
-			influenceTex, 
-			Environment.POIBuffer, 
-			Baker.ParamsBuffer, 
-			(uint)_currentConfig.Resolution // Casteo explícito
-		);
-
-		// Nota: No usamos Submit/Sync manual porque estamos en el RD Global.
+		// Pintar Influencia Inicial
+		// NOTA: Asegúrate de que Baker exponga su ParamsBuffer si lo necesitamos aquí, 
+		// o usa el _paramsBuffer local si es el mismo binding.
+		_poiPainter.PaintInfluence(influenceTex, Environment.POIBuffer, GetParamsBufferRid(), (uint)_currentConfig.Resolution);
 		
 		await ToSignal(GetTree(), "process_frame");
 
-		// 7. INICIALIZAR RENDERER DEL PLANETA
 		PlanetRenderer.Initialize(
 			bakeResult.HeightMapRid,
 			bakeResult.VectorFieldRid,
-			bakeResult.NormalMapRid,  // NUEVO parámetro
+			bakeResult.NormalMapRid,
 			_currentConfig
 		);
 
-		// CRÍTICO: Pasar la textura al Material del Renderer
 		PlanetRenderer.SetInfluenceMap(influenceTex);
-		
-		// Configurar debug visual
+		PlanetRenderer.SetBiomeLevels(CurrentWaterLevel, CurrentSnowLevel, realMin, realMax);
+		PlanetRenderer.ApplyBiomeData(currentBiomeData);
 		PlanetRenderer.SetViewPoiField(_isViewPoiField);
 
 		_isRunning = true;
-		GD.Print("[SimulationController] Initialized: TextureType.Cube OK.");
+		GD.Print("[SimulationController] Initialized AAA Pipeline.");
 	}
-
-
-
 
 	public override void _Process(double delta)
 	{
 		if (!_isRunning) return;
-
+		
 		double time = Time.GetTicksMsec() / 1000.0;
 		AgentSys.UpdateSimulation(delta, time);
 
-		// Gestión de apertura de consola
-		// if (Input.IsActionJustPressed("toggle_console"))
-		// {
-		// 	ToggleConsole();
-		// }
-
+		// Asumo que UI maneja sus inputs internamente, o agregamos lógica aquí
 		UI.UpdateStats(delta, (int)AgentSys.ActiveAgentCount);
 	}
+
+	// --- MÉTODOS DE COMUNICACIÓN CON GPU ---
+
+	/// <summary>
+	/// Convierte la configuración C# a bytes y actualiza el Uniform Buffer de la GPU.
+	/// Esto es lo que "envía" los datos al Compute Shader.
+	/// </summary>
+	private void UpdateShaderBuffer()
+	{
+		// 1. Construir el array plano de floats siguiendo la estructura std140 del shader
+		// layout(set = 0, binding = 4) uniform BakeParams
+		float[] rawFloats = new float[] 
+		{
+			// vec4 noise_settings (x: scale, y: persistence, z: lacunarity, w: octaves)
+			_currentConfig.NoiseScale, 
+			0.5f,  // Persistence (Valor estándar para look orgánico)
+			2.0f,  // Lacunarity (Valor estándar)
+			6.0f,  // Octaves (Detalle)
+
+			// vec4 curve_params (x: ocean, y: weight, z: height, w: radius)
+			_currentConfig.OceanFloorLevel,
+			_currentConfig.WeightMultiplier,
+			_currentConfig.NoiseHeight,
+			_currentConfig.Radius,
+
+			// vec4 global_offset (xyz: seed)
+			_currentConfig.NoiseOffset.X, 
+			_currentConfig.NoiseOffset.Y, 
+			_currentConfig.NoiseOffset.Z, 
+			0.0f, // Padding
+
+			// vec4 pad_center (unused)
+			0,0,0,0,
+
+			// vec4 res_offset (x: resolution)
+			(float)_currentConfig.Resolution, 0,0,0,
+
+			// vec4 pad_uv (unused)
+			0,0,0,0
+		};
+
+		// 2. Convertir a Bytes
+		byte[] paramsBytes = new byte[rawFloats.Length * sizeof(float)];
+		Buffer.BlockCopy(rawFloats, 0, paramsBytes, 0, paramsBytes.Length);
+
+		// 3. Crear o Actualizar el Buffer
+		if (!_paramsBuffer.IsValid)
+		{
+			_paramsBuffer = _rd.UniformBufferCreate((uint)paramsBytes.Length, paramsBytes);
+		}
+		else
+		{
+			_rd.BufferUpdate(_paramsBuffer, 0, (uint)paramsBytes.Length, paramsBytes);
+		}
+	}
+
+	/// <summary>
+	/// Helper para obtener el RID del buffer y pasárselo a otros sistemas (como el Baker o Painter)
+	/// </summary>
+	public Rid GetParamsBufferRid()
+	{
+		if (!_paramsBuffer.IsValid) UpdateShaderBuffer();
+		return _paramsBuffer;
+	}
+
+
 	
 
 	private void ToggleConsole()
@@ -289,5 +436,44 @@ public partial class SimulationController : Node
 		// Al enviar, siempre cerramos la consola
 		ToggleConsole();
 	}
+
+
+	private byte[] GetBytesFromParams(PlanetParamsData config, Vector3 offset)
+	{
+		// Construimos el array lineal de floats (padding necesario para std140/vec4)
+		// 6 vec4s = 24 floats en total
+		float[] rawFloats = new float[] 
+		{
+			// vec4 noise_settings (x: Scale, y: Persist, z: Lacun, w: Octaves)
+			config.NoiseScale, 
+			0.5f,  // Persistence (Valor fijo sugerido o añádelo a tu struct)
+			2.0f,  // Lacunarity (Valor fijo sugerido)
+			6.0f,  // Octaves
+
+			// vec4 curve_params (x: Ocean, y: Weight, z: Amp, w: Radius)
+			config.OceanFloorLevel,
+			config.WeightMultiplier,
+			config.NoiseHeight,
+			config.Radius,
+
+			// vec4 global_offset (xyz: Seed)
+			offset.X, offset.Y, offset.Z, 0.0f,
+
+			// vec4 pad_center (Relleno, no usado en shader actual)
+			0, 0, 0, 0,
+
+			// vec4 res_offset (x: Resolution)
+			(float)config.Resolution, 0, 0, 0,
+
+			// vec4 pad_uv (Relleno final)
+			0, 0, 0, 0 
+		};
+
+		// Convertir float[] a byte[] para Godot
+		byte[] bytes = new byte[rawFloats.Length * sizeof(float)];
+		Buffer.BlockCopy(rawFloats, 0, bytes, 0, bytes.Length);
+		return bytes;
+	}
+
 
 }

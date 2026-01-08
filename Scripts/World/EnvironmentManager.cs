@@ -18,9 +18,9 @@ public partial class EnvironmentManager : Node
 	// Buffer local de datos (XYZ=Dir, W=Radio Normalizado)
 	private Vector4[] _poisData = new Vector4[16];
 
-	private PlanetParams _config;
+	private PlanetParamsData _config;
 
-	public void Initialize(RenderingDevice rd, Rid heightMap, Rid vectorField, PlanetParams config)
+	public void Initialize(RenderingDevice rd, Rid heightMap, Rid vectorField, PlanetParamsData config)
 	{
 		_rd = rd;
 		HeightMap = heightMap;

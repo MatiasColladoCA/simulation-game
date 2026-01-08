@@ -1,20 +1,34 @@
 #[compute]
 #version 450
 
-layout(local_size_x = 32, local_size_y = 32, local_size_z = 1) in;
+layout(local_size_x = 8, local_size_y = 8, local_size_z = 1) in;
 
-layout(set = 0, binding = 0, r32f) writeonly uniform imageCube height_map;
-layout(set = 0, binding = 1, rgba16f) writeonly uniform imageCube vector_field;
-layout(set = 0, binding = 2, rgba16f) writeonly uniform imageCube normal_map;
+// BINDINGS (Tus bindings originales intactos)
+layout(set = 0, binding = 0, r32f) restrict writeonly uniform imageCube height_map;
+layout(set = 0, binding = 1, rgba16f) restrict writeonly uniform imageCube vector_field;
+layout(set = 0, binding = 2, rgba16f) restrict writeonly uniform imageCube normal_map;
 
-layout(push_constant) uniform Params {
-    float planet_radius;
-    float noise_scale;  // Usar 1.0 como base
-    float noise_height; // Usar ej. 0.05
-    uint resolution;
+layout(set = 0, binding = 3, std430) restrict buffer StatsBuffer { 
+    int min_h_fixed; 
+    int max_h_fixed; 
+} stats;
+
+// UNIFORMS (Mapeado a tu estructura C#)
+// noise_settings: x=Scale, y=Persistence, z=Lacunarity, w=Octaves
+// curve_params:   x=OceanFloor(0-1), y=MtnStrength, z=Amplitude, w=Radius
+// global_offset:  xyz=Seed
+layout(set = 0, binding = 4, std140) uniform BakeParams {
+    vec4 noise_settings; 
+    vec4 curve_params;   
+    vec4 global_offset;  
+    vec4 pad_center;     
+    vec4 res_offset;     
+    vec4 pad_uv;   
 } params;
 
-// --- 1. TOOLKIT DE RUIDO (Simplex 3D Optimizado) ---
+const float FIXED_POINT_SCALE = 100000.0;
+
+// --- TOOLKIT DE RUIDO (Standard Simplex) ---
 vec3 mod289(vec3 x) { return x - floor(x * (1.0 / 289.0)) * 289.0; }
 vec4 mod289(vec4 x) { return x - floor(x * (1.0 / 289.0)) * 289.0; }
 vec4 permute(vec4 x) { return mod289(((x*34.0)+1.0)*x); }
@@ -63,142 +77,109 @@ float snoise(vec3 v) {
   return 42.0 * dot( m*m, vec4( dot(p0,x0), dot(p1,x1), dot(p2,x2), dot(p3,x3) ) );
 }
 
-// --- 2. FRACTALES DE RUIDO ---
-
-// FBM Standard (Colinas, detalle suelo)
-float fbm(vec3 x, int octaves, float freq, float gain) {
+// --- FBM SIMPLE (Para continentes base) ---
+float simple_fbm(vec3 x, int octaves, float persistence, float lacunarity) {
     float v = 0.0;
-    float a = 0.5;
+    float a = 1.0; // Amplitud inicial
+    float f = 1.0; // Frecuencia inicial
+    // Normalizar la suma de amplitudes para que regrese -1 a 1 aprox
+    float max_amp = 0.0;
+    
     for (int i = 0; i < octaves; ++i) {
-        v += a * snoise(x * freq);
-        x += vec3(12.34); // Shift para evitar artefactos en el origen
-        freq *= 2.0;
-        a *= gain;
+        v += snoise(x * f) * a;
+        max_amp += a;
+        a *= persistence;
+        f *= lacunarity;
     }
-    return v;
+    return v / max_amp;
 }
 
-// Ridged Multi (Montañas picosas)
-float ridged(vec3 x, int octaves, float freq) {
+// --- RIDGED FBM (Para montañas afiladas) ---
+// Extraído del estilo "RidgeNoise" de Lague
+float ridge_fbm(vec3 x, int octaves, float persistence, float lacunarity) {
     float v = 0.0;
-    float a = 0.5;
+    float a = 1.0;
+    float f = 1.0;
+    float max_amp = 0.0;
+    
     for (int i = 0; i < octaves; ++i) {
-        float n = snoise(x * freq);
-        n = 1.0 - abs(n);
-        n = n * n * n; // Más afilado (potencia cúbica)
-        v += a * n;
-        freq *= 2.0;
-        a *= 0.5;
+        float n = 1.0 - abs(snoise(x * f)); // Invertir y valor absoluto = Crestas
+        n = n * n; // Afilar crestas (Cuadrado)
+        v += n * a;
+        max_amp += a;
+        a *= persistence;
+        f *= lacunarity;
     }
-    return v;
+    return v / max_amp;
 }
 
-// Billow Noise (Para ríos/cañones - es el inverso del Ridged suave)
-float billow(vec3 x, int octaves, float freq) {
-    float v = 0.0;
-    float a = 0.5;
-    for (int i = 0; i < octaves; ++i) {
-        float n = snoise(x * freq);
-        v += a * abs(n);
-        freq *= 2.0;
-        a *= 0.5;
-    }
-    return v;
-}
-
-// --- 3. LÓGICA DE TERRENO AVANZADA ---
-
+// --- LOGICA PRINCIPAL (Estilo Lague) ---
 float get_terrain_height(vec3 dir) {
-    // A. Domain Warping (Romper la grilla del ruido)
-    // Esto evita que el ruido se vea alineado y artificial
-    vec3 q = dir * params.noise_scale;
-    vec3 warp_vec = vec3(
-        fbm(q, 2, 0.5, 0.5),
-        fbm(q + vec3(5.2), 2, 0.5, 0.5),
-        fbm(q + vec3(1.3), 2, 0.5, 0.5)
-    );
-    vec3 p = dir * params.noise_scale + warp_vec * 0.15; // 0.15 es la fuerza de distorsión
-
-    // B. Máscara Continental (Forma base del mundo)
-    // Frecuencia muy baja = formas grandes
-    float continent_shape = fbm(p, 4, 1.0, 0.5); 
+    // 1. Extraer Parámetros
+    vec3  pos         = dir + params.global_offset.xyz;
+    float scale       = params.noise_settings.x; // NoiseScale
+    float persistence = params.noise_settings.y; // Usaremos fijo 0.5 o variable
+    float lacunarity  = params.noise_settings.z; // Usaremos fijo 2.0 o variable
+    int   octaves     = 6; // Calidad fija o params.noise_settings.w
     
-    // C. Máscara de Montañas (Independiente del continente)
-    // Define DÓNDE habrá montañas si hay tierra
-    float mountain_density = fbm(p + vec3(100.0), 3, 2.0, 0.5);
+    // Parámetros de "Estilo"
+    float ocean_floor = params.curve_params.x; // OceanFloorLevel
+    float mtn_strength= params.curve_params.y; // WeightMultiplier
+    // Usaremos MountainRoughness para controlar qué tan "picosas" son las montañas
     
-    // D. Detalle de Terreno (Llanuras/Suelo)
-    // Frecuencia media/alta, amplitud baja.
-    // IMPORTANTE: Esto se aplica en todo el planeta para evitar zonas "lisas" (borrosas)
-    float ground_detail = fbm(p * 5.0, 3, 4.0, 0.5) * 0.05;
-
-    // --- MEZCLA DE BIOMAS ---
+    // 2. Continentes (Base Shape)
+    // Baja frecuencia, define tierra vs mar
+    float continent_shape = simple_fbm(pos * scale, octaves, 0.5, 2.0);
     
-    float h = continent_shape;
+    // Mover rango de -1..1 a 0..1 aprox
+    float h = continent_shape * 0.5 + 0.5;
     
-    // Nivel del mar base (ej. 0.0). Ajustamos para definir cuánta agua hay.
-    // Si h > 0.1 es tierra, si no es mar.
-    float sea_level = 0.1;
-    
-    if (h > sea_level) {
-        // --- ESTAMOS EN TIERRA ---
+    // 3. Océanos (Aplanado)
+    // Si está por debajo del nivel del mar, aplanarlo
+    if (h < ocean_floor) {
+        // Suavizar un poco la transición al fondo marino
+        h = mix(0.0, ocean_floor, smoothstep(0.0, ocean_floor, h));
+    } else {
+        // 4. Montañas (Solo en tierra)
+        // Máscara: ¿Dónde permitimos montañas?
+        // Usamos una versión offset del ruido para que no se alinee perfectamente con los continentes
+        float mtn_mask = simple_fbm((pos + vec3(12.5)) * scale * 2.0, 3, 0.5, 2.0);
+        mtn_mask = smoothstep(0.15, 0.55, mtn_mask * 0.5 + 0.5); // 0 = llanura, 1 = zona montañosa
         
-        // Suavizar la transición costa/tierra
-        float land_factor = smoothstep(sea_level, sea_level + 0.1, h);
+        // Ruido de Crestas (Ridge)
+        // Mayor frecuencia (scale * 3.0) para detalle
+        float ridges = ridge_fbm(pos * scale * 3.0, 5, 0.5, 2.0);
         
-        // 1. Decidir si es Montaña o Llanura
-        // Si mountain_density es alto -> Montaña. Si es bajo -> Llanura.
-        float is_mountain = smoothstep(0.2, 0.6, mountain_density);
-        
-        // Generar montañas reales
-        float mtns = ridged(p, 5, 5.0) * 0.8; // 0.8 es altura máxima montañas
-        
-        // Generar llanuras (suaves pero con ruido)
-        float plains = ground_detail * 2.0; // Poco relieve
-        
-        // Mezclar según la máscara
-        float land_shape = mix(plains, mtns, is_mountain);
-        
-        // Añadir a la base continental
-        h += land_shape * land_factor;
-        
-        // 2. Ríos
-        // Usamos billow noise. Si el valor es muy bajo, cavamos un río.
-        float river_noise = billow(p, 4, 3.0);
-        float river_mask = smoothstep(0.1, 0.15, river_noise); // Canales estrechos
-        
-        // Solo cavar ríos en llanuras (evitar cortar picos de montañas surrealistamente)
-        float river_strength = (1.0 - is_mountain) * 0.5; 
-        
-        // "Excavar" el río invirtiendo la máscara
-        h = mix(h - 0.05, h, clamp(river_mask + (1.0 - river_strength), 0.0, 1.0));
-    } 
-    else {
-        // --- ESTAMOS EN EL MAR ---
-        // Añadir detalle al fondo marino para que no se vea "liso/borroso"
-        // Lecho marino rugoso + fosas oceánicas
-        h += ground_detail; 
-        
-        // Fosas profundas (ruido ridged invertido)
-        float trench = ridged(p, 2, 2.0);
-        if (trench > 0.8) h -= (trench - 0.8) * 0.5;
+        // Sumar montañas a la base, modulado por la máscara y la fuerza
+        h += ridges * mtn_mask * mtn_strength * 0.5;
     }
 
-    // Normalizar salida para que el shader de fragmentos tenga rango útil
-    return h * 0.5 + 0.5;
+    return h; // Devuelve 0-1 (puede pasarse de 1 con las montañas, está bien)
 }
 
-// --- 4. CURL NOISE PARA EL AGUA ---
+// Exagera los valores altos (crea picos) y aplana los bajos
+float ease_in_cubic(float x) {
+    return x * x * x;
+}
+
+// Suaviza la transición entre dos valores
+float smooth_blend(float edge0, float edge1, float x) {
+    return clamp((x - edge0) / (edge1 - edge0), 0.0, 1.0);
+}
+
+// Helper para Curl Noise (Flujo de agua/aire)
 vec3 curl_noise(vec3 p) {
-    const float e = 0.1; 
-    vec3 dx = vec3(e, 0.0, 0.0); vec3 dy = vec3(0.0, e, 0.0); vec3 dz = vec3(0.0, 0.0, e);
+    const float e = 0.01; 
+    vec3 dx = vec3(e, 0.0, 0.0); 
+    vec3 dy = vec3(0.0, e, 0.0); 
+    vec3 dz = vec3(0.0, 0.0, e);
+    
     float n_x = snoise(p + dy) - snoise(p - dy);
     float n_y = snoise(p + dz) - snoise(p - dz);
     float n_z = snoise(p + dx) - snoise(p - dx);
     return normalize(vec3(n_x, n_y, n_z));
 }
 
-// Helper de dirección
 vec3 get_direction(uvec3 id, float size) {
     vec2 uv = (vec2(id.xy) + 0.5) / size;
     uv = uv * 2.0 - 1.0;
@@ -215,47 +196,46 @@ vec3 get_direction(uvec3 id, float size) {
 
 void main() {
     uvec3 id = gl_GlobalInvocationID;
-    if (id.x >= params.resolution || id.y >= params.resolution) return;
+    float resolution = params.res_offset.x;
+    
+    if (id.x >= uint(resolution) || id.y >= uint(resolution)) return;
 
-    vec3 dir = get_direction(id, float(params.resolution));
+    vec3 dir = get_direction(id, resolution);
 
-    // 1. ALTURA
-    float h_val = get_terrain_height(dir);
-    imageStore(height_map, ivec3(id), vec4(h_val, 0.0, 0.0, 1.0));
+    // 1. ALTURA BASE
+    float h_01 = get_terrain_height(dir);
+    float amplitude = params.curve_params.z; 
+    float radius = params.curve_params.w;
+    
+    float h_final = h_01 * amplitude;
+    
+    imageStore(height_map, ivec3(id), vec4(h_final, 0.0, 0.0, 1.0));
 
-    // 2. NORMALES (Calculadas con delta muy pequeño para capturar detalle fino)
-    float eps = 1.0 / float(params.resolution); 
+    // 2. NORMALES (Método de diferencias finitas en esfera)
+    // Calculamos 3 muestras muy cercanas para sacar la pendiente
+    float eps = 1.0 / resolution; 
     vec3 tangent = normalize(cross(dir, vec3(0,1,0)));
     if (length(tangent) < 0.001) tangent = normalize(cross(dir, vec3(1,0,0)));
     vec3 bitangent = normalize(cross(dir, tangent));
     
-    float h_center = h_val;
-    float h_right  = get_terrain_height(normalize(dir + tangent * eps));
-    float h_up     = get_terrain_height(normalize(dir + bitangent * eps));
+    float h_right = get_terrain_height(normalize(dir + tangent * eps)) * amplitude;
+    float h_up    = get_terrain_height(normalize(dir + bitangent * eps)) * amplitude;
 
-    float r = params.planet_radius;
-    float amp = params.noise_height;
-    
-    vec3 p_c = dir * (r + h_center * amp);
-    vec3 p_r = normalize(dir + tangent * eps) * (r + h_right * amp);
-    vec3 p_u = normalize(dir + bitangent * eps) * (r + h_up * amp);
+    vec3 p_c = dir * (radius + h_final);
+    vec3 p_r = normalize(dir + tangent * eps) * (radius + h_right);
+    vec3 p_u = normalize(dir + bitangent * eps) * (radius + h_up);
 
-    vec3 n_geom = normalize(cross(p_r - p_c, p_u - p_c));
+    vec3 n_geom = normalize(cross(p_u - p_c, p_r - p_c)); // Ojo: orden del cross product define dirección
     imageStore(normal_map, ivec3(id), vec4(n_geom, 1.0));
 
-    // 3. FLOW (Mezcla de Curl y Pendiente)
-    vec3 flow_base = curl_noise(dir * params.noise_scale * 4.0);
+    // 3. VECTOR FIELD (Opcional, basado en curl noise)
+    vec3 flow = curl_noise(dir * params.noise_settings.x * 2.0);
+    // Proyectar sobre la superficie
+    flow = normalize(flow - dot(flow, n_geom) * n_geom);
+    imageStore(vector_field, ivec3(id), vec4(flow, 1.0));
     
-    // Gradiente para que el agua "caiga" por montañas
-    vec3 gradient = (tangent * (h_right - h_center) + bitangent * (h_up - h_center)) / eps;
-    float slope = length(gradient);
-    
-    // Si la pendiente es fuerte, el agua cae. Si es plana, fluye orgánicamente.
-    float gravity_factor = smoothstep(0.001, 0.05, slope);
-    vec3 flow_final = mix(flow_base, -normalize(gradient + vec3(0.0001)), gravity_factor);
-    
-    flow_final = flow_final - dot(flow_final, n_geom) * n_geom;
-    flow_final = normalize(flow_final);
-    
-    imageStore(vector_field, ivec3(id), vec4(flow_final, 1.0));
+    // 4. STATS BUFFER
+    int h_fixed = int(h_final * FIXED_POINT_SCALE);
+    atomicMin(stats.min_h_fixed, h_fixed);
+    atomicMax(stats.max_h_fixed, h_fixed);
 }

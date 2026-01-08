@@ -1,101 +1,105 @@
 #[compute]
 #version 450
 
-// Tamaño del grupo de trabajo
+// 8x8 hilos por grupo (coincide con tu C#: resolution / 8.0f)
 layout(local_size_x = 8, local_size_y = 8, local_size_z = 1) in;
 
-// Binding 0: Parámetros (Coincide con TerrainBaker.cs)
-layout(set = 0, binding = 0, std430) buffer Params {
-    float radius;
-    float resolution;
-    float noise_scale;
-    float noise_height;
-} p;
+// --- BINDING 0: PARÁMETROS DEL PLANETA (Uniform Buffer - std140) ---
+// Debe coincidir EXACTAMENTE con el orden de escritura de PlanetBaker.cs
+// Usamos vec4 para garantizar la alineación de 16 bytes de std140 y evitar errores de padding.
+layout(set = 0, binding = 0, std140) uniform PlanetParamsData {
+    vec4 noise_settings; // x: scale, y: pers, z: lac, w: octaves
+    vec4 curve_params;   // x: exp, y: rough, z: height, w: RADIUS (Importante)
+    vec4 face_up_pad;    // xyz: face_up, w: pad
+    vec4 center_pad;     // xyz: center, w: pad
+    vec4 res_offset;     // xy: resolution, zw: offset
+    vec4 uv_scale_pad;   // x: uv_scale, yzw: pad
+} params;
 
-// Binding 1: POIs (Coincide con EnvironmentManager.cs)
-layout(set = 0, binding = 1, std430) buffer POIs {
-    vec4 data[16];
+// --- BINDING 1: LISTA DE POIS (Storage Buffer - std430) ---
+// Coincide con EnvironmentManager.cs
+layout(set = 0, binding = 1, std430) restrict readonly buffer PoiBuffer {
+    // xyz: Dirección Normalizada, w: Radio de Influencia Normalizado (0.0 a 1.0 relativo al planeta)
+    vec4 data[]; 
 } pois;
 
-// Binding 2: Textura de Salida (Cubo tratado como Array de 2D)
-layout(set = 0, binding = 2, rgba16f) uniform image2DArray influence_texture;
+// --- BINDING 2: TEXTURA DE SALIDA (Cubemap) ---
+layout(set = 0, binding = 2, rgba16f) restrict writeonly uniform imageCube influence_map;
 
-// --- FUNCIÓN SEGURA DE COORDENADAS ---
-vec3 tex_to_world(uvec3 id, float res) {
-    // 1. Convertir pixel a UV [0 a 1]
-    vec2 uv = (vec2(id.xy) + 0.5) / res;
-    
-    // 2. Convertir a NDC [-1 a 1]
-    vec2 ndc = uv * 2.0 - 1.0;
-    
-    // Invertir Y para corregir la orientación de Vulkan
-    ndc.y = -ndc.y; 
+// --- UTILIDADES ---
 
-    uint face = id.z;
-    vec3 v = vec3(0.0);
+// Función para obtener la dirección 3D normalizada de un texel de cubemap
+vec3 get_cubemap_direction(ivec2 pos, int face, vec2 resolution) {
+    vec2 uv = (vec2(pos) + 0.5) / resolution; // 0..1
+    uv = uv * 2.0 - 1.0; // -1..1
 
-    // Comparación simple de enteros (sin sufijos 'u' para máxima compatibilidad)
-    if(face == 0)      v = vec3(1.0, ndc.y, -ndc.x);  // +X
-    else if(face == 1) v = vec3(-1.0, ndc.y, ndc.x);  // -X
-    else if(face == 2) v = vec3(ndc.x, 1.0, -ndc.y);  // +Y
-    else if(face == 3) v = vec3(ndc.x, -1.0, ndc.y);  // -Y
-    else if(face == 4) v = vec3(ndc.x, ndc.y, 1.0);   // +Z
-    else if(face == 5) v = vec3(-ndc.x, ndc.y, -1.0); // -Z
-    
-    return normalize(v);
+    vec3 dir;
+    // Mapeo estándar de Cubemap (OpenGL/Vulkan convention)
+    switch(face) {
+        case 0: dir = vec3(1.0, -uv.y, -uv.x); break;  // +X
+        case 1: dir = vec3(-1.0, -uv.y, uv.x); break;  // -X
+        case 2: dir = vec3(uv.x, 1.0, uv.y); break;    // +Y
+        case 3: dir = vec3(uv.x, -1.0, -uv.y); break;  // -Y
+        case 4: dir = vec3(uv.x, -uv.y, 1.0); break;   // +Z
+        case 5: dir = vec3(-uv.x, -uv.y, -1.0); break; // -Z
+    }
+    return normalize(dir);
 }
 
 void main() {
-    uvec3 id = gl_GlobalInvocationID;
+    // Coordenadas globales: XY = Pixel, Z = Cara del Cubo (0-5)
+    ivec3 id = ivec3(gl_GlobalInvocationID);
+    vec2 res = params.res_offset.xy;
+
+    // Boundary check
+    if (id.x >= int(res.x) || id.y >= int(res.y)) return;
+
+    // 1. Obtener la dirección en el espacio mundo de este píxel del cubemap
+    vec3 pixel_dir = get_cubemap_direction(id.xy, id.z, res);
+
+    // 2. Acumular Influencia
+    float total_heat = 0.0;
+    vec3 color_acc = vec3(0.0);
+
+    // Recorremos todos los POIs (data.length() funciona en buffers std430 no acotados)
+    uint count = pois.data.length();
     
-    // Seguridad contra NaNs si la resolución llega mal
-    float safe_res = p.resolution;
-    if (safe_res < 1.0) safe_res = 1024.0;
-    
-    // Límites
-    if (id.x >= uint(safe_res) || id.y >= uint(safe_res)) return;
+    for (uint i = 0; i < count; i++) {
+        vec4 poi = pois.data[i];
+        vec3 poi_dir = poi.xyz;       // Dirección del POI
+        float influence_rad = poi.w;  // Radio normalizado (ángulo aprox)
 
-    vec3 world_dir = tex_to_world(id, safe_res);
-    float total_influence = 0.0;
+        // Si el radio es 0 o negativo, es un slot vacío o padding
+        if (influence_rad <= 0.0001) continue;
 
-    // Iterar POIs
-    for(int i = 0; i < 16; i++) {
-        // data.w es el radio. Si es 0 o negativo, saltar.
-        if (pois.data[i].w <= 0.0001) continue;
+        // Calcular ángulo entre el píxel actual y el centro del POI
+        // Dot product: 1.0 = mismo sitio, 0.0 = 90 grados
+        float dot_val = dot(pixel_dir, poi_dir);
+        
+        // Convertir a distancia angular (más preciso para esferas)
+        // clamp para evitar errores numéricos fuera de -1..1
+        float angle = acos(clamp(dot_val, -1.0, 1.0));
 
-        vec3 poi_dir = normalize(pois.data[i].xyz);
-        float poi_range = pois.data[i].w; 
-        
-        float dist = distance(world_dir, poi_dir);
-        
-        // Cálculo de influencia con protección contra división por cero
-        float influence = 1.0 - smoothstep(0.0, max(0.0001, poi_range), dist);
-        
-        total_influence += influence;
+        // Si estamos dentro del radio de influencia
+        if (angle < influence_rad) {
+            // Falloff suave (Smoothstep): 1.0 en el centro, 0.0 en el borde
+            // Invertimos (1.0 - t) para que el centro sea caliente
+            float t = smoothstep(0.0, influence_rad, angle);
+            float heat = 1.0 - t; 
+            
+            // Acumular (Suma simple, se puede usar max() para hard blend)
+            total_heat += heat;
+            
+            // Debug color (rojo por defecto, podrías pasar color en el buffer)
+            color_acc += vec3(1.0, 0.2, 0.1) * heat;
+        }
     }
 
-    total_influence = clamp(total_influence, 0.0, 1.0);
+    // Saturar para no exceder 1.0
+    total_heat = clamp(total_heat, 0.0, 1.0);
+    color_acc = clamp(color_acc, 0.0, 1.0);
 
-    // Fondo: Celeste Oscuro (Océano de datos vacío)
-    vec3 col_bg = vec3(0.0, 0.2, 0.5); 
-    
-    // Borde de influencia: Amarillo
-    vec3 col_mid = vec3(1.0, 0.8, 0.0);
-    
-    // Centro del POI: Blanco Brillante
-    vec3 col_core = vec3(1.0, 1.0, 1.0);
-
-    vec3 final_rgb;
-    
-    // Gradiente de 3 colores para que se vea más lindo
-    if (total_influence < 0.5) {
-        // De Celeste a Amarillo
-        final_rgb = mix(col_bg, col_mid, total_influence * 2.0);
-    } else {
-        // De Amarillo a Blanco
-        final_rgb = mix(col_mid, col_core, (total_influence - 0.5) * 2.0);
-    }
-    
-    // Guardar
-    imageStore(influence_texture, ivec3(id), vec4(final_rgb, total_influence));
+    // 3. Escribir Resultado
+    // RGB = Color visual, A = Fuerza de influencia (usada por lógica de juego)
+    imageStore(influence_map, id, vec4(color_acc, total_heat));
 }

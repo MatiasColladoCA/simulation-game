@@ -53,7 +53,7 @@ public partial class AgentSystem : Node3D
 
 	// --- API PÚBLICA ---
 
-	public void Initialize(RenderingDevice rd, EnvironmentManager env, PlanetParams config)	{
+	public void Initialize(RenderingDevice rd, EnvironmentManager env, PlanetParamsData config)	{
 		_rd = rd;
 		
 		// Asignación desde el nuevo gestor de entorno
