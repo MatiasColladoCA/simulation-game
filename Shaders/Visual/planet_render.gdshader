@@ -1,128 +1,128 @@
 shader_type spatial;
 render_mode specular_schlick_ggx, cull_back;
 
-// --- 1. DATOS GEOMÉTRICOS (GPU BAKED) ---
-uniform samplerCube height_map_gpu : filter_linear, repeat_enable; 
-uniform samplerCube normal_map_gpu : filter_linear, repeat_enable; 
+// --- UNIFORMS ---
+uniform samplerCube height_map_gpu : filter_linear, repeat_enable;
+uniform samplerCube normal_map_gpu : filter_linear, repeat_enable;
 uniform samplerCube vector_field_gpu : filter_linear, repeat_enable;
-uniform samplerCube influence_texture : filter_linear, repeat_enable; // POI System
+uniform samplerCube influence_texture : filter_linear, repeat_enable;
 
-// --- 2. DATOS LÓGICOS (CPU CONTROLLER) ---
-// Valores ABSOLUTOS en metros (no 0-1)
 uniform float planet_radius = 100.0;
-uniform float min_height_absolute = 0.0; // Solo para debug/clamping
-uniform float max_height_absolute = 25.0;
-uniform float water_level = 0.0; 
-uniform float snow_level = 40.0;
-
-// Configuración Visual
-uniform float transition_sharpness = 2.0; // Metros para mezclar biomas
-uniform float ocean_depth_color_range = 10.0; // Metros para gradiente playa->fondo
-
-// Debug
+// uniform float noise_amplitude = 10.0;
+uniform float water_level_norm = 0.5;
 uniform bool view_vector_field = false;
 uniform bool view_poi_field = false;
-uniform float debug_line_density = 20.0;
+uniform float debug_line_density = 10.0;
 uniform float debug_flow_speed = 2.0;
 
-// --- 3. PALETA DE COLORES (AAA PBR) ---
-uniform vec3 color_deep_sea : source_color = vec3(0.02, 0.05, 0.15);
-uniform vec3 color_shallow  : source_color = vec3(0.1, 0.4, 0.45);
-uniform vec3 color_beach    : source_color = vec3(0.76, 0.65, 0.5);
-uniform vec3 color_ground   : source_color = vec3(0.15, 0.25, 0.1); // Tierra oscura
-uniform vec3 color_grass    : source_color = vec3(0.1, 0.4, 0.15);
-uniform vec3 color_rock     : source_color = vec3(0.35, 0.32, 0.3); // Roca gris/marrón
-uniform vec3 color_snow     : source_color = vec3(0.95, 0.95, 1.0);
+uniform float min_height_absolute;
+uniform float max_height_absolute;
 
-// --- 4. INSTANCING (QuadTree) ---
+
+// Colores biomas
+uniform vec3 color_seabed = vec3(0.2,0.15,0.1);
+uniform vec3 color_beach  = vec3(0.76,0.7,0.5);
+uniform vec3 color_grass  = vec3(0.25,0.4,0.35);
+uniform vec3 color_rock   = vec3(0.4,0.35,0.3);
+uniform vec3 color_snow   = vec3(0.9,0.9,0.95);
+
+// --- INSTANCING ---
 instance uniform vec3 chunk_center;
 instance uniform vec3 chunk_axis_a;
 instance uniform vec3 chunk_axis_b;
 instance uniform float chunk_size;
 
-// Varyings
-varying float v_altitude;     // Altura absoluta sobre el radio
-varying vec3 v_dir_local;     // Dirección normalizada (para sampling de Cubemaps)
-varying vec3 v_world_pos;     // Posición mundo real
-varying vec3 v_normal_geom;   // Normal geométrica plana (para mezcla)
-
-// Función auxiliar para mezclar tres colores basado en altura
-vec3 biome_tri_mix(float h, float edge0, float edge1, vec3 c0, vec3 c1, vec3 c2) {
-    float t = smoothstep(edge0 - transition_sharpness, edge0 + transition_sharpness, h);
-    vec3 base = mix(c0, c1, t);
-    float t2 = smoothstep(edge1 - transition_sharpness, edge1 + transition_sharpness, h);
-    return mix(base, c2, t2);
-}
-
+// VARYINGS
+varying float v_height_norm;
+varying vec3 v_dir_local;
+varying vec3 v_world_pos;
 
 void vertex() {
     vec2 relative_pos = UV - 0.5;
-    v_world_pos = chunk_center + (relative_pos.x * chunk_size * chunk_axis_a) + (relative_pos.y * chunk_size * chunk_axis_b);
-    vec3 dir = normalize(v_world_pos);
+    vec3 pos_on_cube = chunk_center
+        + relative_pos.x * chunk_size * chunk_axis_a
+        + relative_pos.y * chunk_size * chunk_axis_b;
+
+    vec3 dir = normalize(pos_on_cube);
+    float h_val = texture(height_map_gpu, dir).r;
+
+    float h_norm = (h_val - min_height_absolute)
+                / max(0.0001, max_height_absolute - min_height_absolute);
+
+    h_norm = clamp(h_norm, 0.0, 1.0);
+
+    v_height_norm = h_norm;
+
+
+    VERTEX = dir * (planet_radius + h_val);
+    v_world_pos = VERTEX;
     v_dir_local = dir;
-    v_normal_geom = dir;
 
-    float h_absolute = texture(height_map_gpu, dir).r;
-    v_altitude = h_absolute;
+    // NORMAL = vec3(0.0); // o eliminar la asignación
 
-    VERTEX = dir * (planet_radius + h_absolute);
-    NORMAL = dir; 
 }
 
+
 void fragment() {
-    float h = v_altitude; 
+    float h = v_height_norm;
 
-    // --- MÁSCARAS ---
-    float w_ocean = 1.0 - smoothstep(water_level - 0.5, water_level + 0.5, h);
-    float w_snow  = smoothstep(snow_level - transition_sharpness, snow_level + transition_sharpness, h);
+    // Normales horneadas del baker
+    vec3 n_baked = texture(normal_map_gpu, v_dir_local).xyz;
 
-    // --- COLORES ---
-    // Seabed
-    float depth = max(0.0, water_level - h);
-    float depth_factor = clamp(depth / ocean_depth_color_range, 0.0, 1.0);
-    vec3 c_seabed = mix(color_beach, color_deep_sea, depth_factor); 
+    // Normal geométrica de fallback (solo para seam blending)
+    vec3 n_geo = normalize(cross(dFdx(v_world_pos), dFdy(v_world_pos)));
 
-    // Tierra
-    float limit_beach = water_level + 2.0;
-    float limit_grass = snow_level - 15.0;
-    
-    float t_beach_to_grass = smoothstep(limit_beach, limit_beach + 5.0, h);
-    float t_grass_to_rock  = smoothstep(limit_grass, limit_grass + 10.0, h);
+    // Forzar orientación correcta respecto al centro del planeta
+    if (dot(n_geo, v_dir_local) < 0.0) {
+        n_geo = -n_geo;
+    }
 
-    vec3 c_terrain = mix(color_beach, color_grass, t_beach_to_grass);
-    c_terrain = mix(c_terrain, color_rock, t_grass_to_rock);
+    // Mezcla suave para ocultar seams del cubemap
+    vec3 n_final = normalize(mix(n_geo, n_baked, 0.95));
 
-    vec3 albedo_final = mix(c_terrain, c_seabed, w_ocean);
-    albedo_final = mix(albedo_final, color_snow, w_snow);
+    // Transformar al espacio vista
+    NORMAL = mat3(VIEW_MATRIX) * n_geo;
 
-    // --- PBR ---
-    float roughness_final = mix(0.8, 0.9, w_ocean); // Tierra 0.8, Fondo Marino 0.9
-    roughness_final = mix(roughness_final, 0.6, w_snow); // Nieve 0.6
+    // --- BIOMAS ---
+    vec3 final_color;
+    if (h < water_level_norm) {
+        float depth = (water_level_norm - h) * 5.0;
+        final_color = mix(color_beach, color_seabed, clamp(depth,0.0,1.0));
+        ROUGHNESS = 0.8;
+    } else if (h < water_level_norm+0.05) {
+        float t = smoothstep(water_level_norm, water_level_norm+0.05, h);
+        final_color = mix(color_beach, color_grass, t);
+        ROUGHNESS = 0.9;
+    } else if (h < 0.75) {
+        float t = smoothstep(water_level_norm+0.15, 0.8, h);
+        final_color = mix(color_grass, color_rock, t);
+        ROUGHNESS = 0.8;
+    } else if (h < 0.85) {
+        float t = smoothstep(0.75,0.85,h);
+        final_color = mix(color_rock, color_snow, t);
+        ROUGHNESS = 1.0;
+    } else {
+        final_color = color_snow;
+        ROUGHNESS = 0.6;
+        SPECULAR = 0.1;
+    }
 
-    // --- NORMAL MAPPING (Sin grano extra) ---
-    vec3 n_baked = texture(normal_map_gpu, v_dir_local).rgb * 2.0 - 1.0;
-    
-    // Mezcla suave con la normal geométrica para ocultar seams de los bordes del cubo (no del terreno)
-    vec3 n_final = normalize(mix(v_normal_geom, n_baked, 0.85)); 
-    
-    NORMAL = mat3(VIEW_MATRIX) * n_final;
-
-    // --- DEBUG ---
+    // --- DEBUG VECTOR FIELD ---
     if (view_vector_field) {
         vec3 flow = texture(vector_field_gpu, v_dir_local).rgb;
-        float stripe = sin(dot(v_world_pos, vec3(1.0)) * 0.5 - TIME * debug_flow_speed);
-        float mask = smoothstep(0.8, 0.9, stripe);
-        albedo_final = mix(albedo_final, vec3(1.0, 1.0, 0.0), mask * 0.5);
-    }
-    
-    if (view_poi_field) {
-        vec4 poi = texture(influence_texture, v_dir_local);
-        albedo_final = mix(albedo_final, poi.rgb, poi.a * 0.8);
-        EMISSION = poi.rgb * poi.a;
+        float stripes = dot(v_world_pos, vec3(0.5)) - TIME*debug_flow_speed;
+        float mask = smoothstep(-0.2,0.2,sin(stripes*debug_line_density));
+        vec3 flow_vis = mix(flow*0.3, flow, mask);
+        final_color = mix(final_color, flow_vis,0.7);
     }
 
-    ALBEDO = albedo_final;
-    ROUGHNESS = roughness_final;
-    SPECULAR = 0.1;
+    // --- DEBUG POI ---
+    if (view_poi_field) {
+        vec4 poi = texture(influence_texture, v_dir_local);
+        final_color = poi.rgb;
+        EMISSION = poi.rgb * 0.5;
+    }
+
+    ALBEDO = final_color;
     METALLIC = 0.0;
 }

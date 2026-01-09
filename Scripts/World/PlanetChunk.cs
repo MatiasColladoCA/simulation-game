@@ -35,7 +35,7 @@ public class PlanetChunk
         LodLevel = lod;
     }
 
-public void Update()
+    public void Update()
     {
         // 1. Calculamos posiciones en espacio Global
         Vector3 spherePos = Center.Normalized() * Radius;
@@ -66,13 +66,26 @@ public void Update()
         }
 
         // 3. DISTANCIA Y LOD (Lógica estándar si pasó el filtro de horizonte)
-        float dist = globalChunkPos.DistanceTo(CameraPos);
+        // float dist = globalChunkPos.DistanceTo(CameraPos);
+
+        float baseDist = globalChunkPos.DistanceTo(CameraPos);
+
+        // dot ya lo calculaste arriba
+        float angularFactor = Mathf.Clamp(dot, 0.0f, 3.0f);
+
+        // EXPONENCIAL: castiga MUY fuerte los laterales
+        angularFactor = Mathf.Pow(angularFactor, 3.0f); // 2–4 es buen rango
+
+        float effectiveDist = baseDist / Mathf.Max(angularFactor, 0.05f);
+
         
         // Ajusta este multiplicador (aggressiveness) según tu gusto visual/rendimiento
+        
+        float lodMultiplier = Mathf.Pow(1.0f, LodLevel);
         // 2.0f es balanceado. 1.5f es más optimizado (pierde calidad antes).
-        float splitDist = (Size * Radius) * 1.5f; 
-
-        if (dist < splitDist && LodLevel < MAX_LOD) 
+        float splitDist = (Size * Radius) * 3.0f * lodMultiplier;
+        
+        if (effectiveDist < splitDist && LodLevel < MAX_LOD)
         {
             if (Children == null) Split();
             foreach (var child in Children) child.Update();
@@ -80,7 +93,6 @@ public void Update()
         else
         {
             if (Children != null) Merge();
-            
             if (MeshInstance == null) CreateMesh();
             MeshInstance.Visible = true;
         }

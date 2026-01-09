@@ -15,7 +15,7 @@ public partial class PoiPainter : RefCounted
 		_pipeline = _rd.ComputePipelineCreate(_shader);
 	}
 
-	public void PaintInfluence(Rid influenceTextureRid, Rid poiBufferRid, Rid paramsBufferRid, uint resolution)
+	public void PaintInfluence(Rid influenceTextureRid, Rid poiBufferRid, Rid paramsBufferRid, float resolution)
 	{
 		// 1. Preparación de Uniformes
 		

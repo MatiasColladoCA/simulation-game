@@ -4,27 +4,23 @@
 layout(local_size_x = 8, local_size_y = 8, local_size_z = 1) in;
 
 // BINDINGS (Tus bindings originales intactos)
-layout(set = 0, binding = 0, r32f) restrict writeonly uniform imageCube height_map;
-layout(set = 0, binding = 1, rgba16f) restrict writeonly uniform imageCube vector_field;
-layout(set = 0, binding = 2, rgba16f) restrict writeonly uniform imageCube normal_map;
+layout(set = 0, binding = 0, r32f) writeonly uniform imageCube height_map;
+layout(set = 0, binding = 1, rgba16f) writeonly uniform imageCube vector_field;
 
 layout(set = 0, binding = 3, std430) restrict buffer StatsBuffer { 
     int min_h_fixed; 
     int max_h_fixed; 
 } stats;
 
-// UNIFORMS (Mapeado a tu estructura C#)
-// noise_settings: x=Scale, y=Persistence, z=Lacunarity, w=Octaves
-// curve_params:   x=OceanFloor(0-1), y=MtnStrength, z=Amplitude, w=Radius
-// global_offset:  xyz=Seed
 layout(set = 0, binding = 4, std140) uniform BakeParams {
     vec4 noise_settings; 
     vec4 curve_params;   
     vec4 global_offset;  
-    vec4 pad_center;     
+    vec4 detail_params;     
     vec4 res_offset;     
     vec4 pad_uv;   
 } params;
+
 
 const float FIXED_POINT_SCALE = 100000.0;
 
@@ -78,11 +74,12 @@ float snoise(vec3 v) {
 }
 
 // --- FBM SIMPLE (Para continentes base) ---
+// --- FBM SIMPLE CON DOMINIO OFFSET (Para continentes base) ---
+// --- FBM SIMPLE CON DOMINIO OFFSET ADITIVO (Más estable y probado) ---
 float simple_fbm(vec3 x, int octaves, float persistence, float lacunarity) {
     float v = 0.0;
     float a = 1.0; // Amplitud inicial
     float f = 1.0; // Frecuencia inicial
-    // Normalizar la suma de amplitudes para que regrese -1 a 1 aprox
     float max_amp = 0.0;
     
     for (int i = 0; i < octaves; ++i) {
@@ -90,13 +87,17 @@ float simple_fbm(vec3 x, int octaves, float persistence, float lacunarity) {
         max_amp += a;
         a *= persistence;
         f *= lacunarity;
+        // <-- CAMBIO CLAVE: Offset aditivo simple y robusto.
+        // Esto rompe la correlación entre octavas de forma más segura.
+        x += vec3(1.23, 4.56, 7.89);
     }
     return v / max_amp;
 }
 
 // --- RIDGED FBM (Para montañas afiladas) ---
 // Extraído del estilo "RidgeNoise" de Lague
-float ridge_fbm(vec3 x, int octaves, float persistence, float lacunarity) {
+// --- RIDGED FBM CON DOMINIO OFFSET (Para montañas afiladas) ---
+float ridge_fbm(vec3 x, int octaves, float persistence, float lacunarity, float sharpness) {
     float v = 0.0;
     float a = 1.0;
     float f = 1.0;
@@ -104,7 +105,43 @@ float ridge_fbm(vec3 x, int octaves, float persistence, float lacunarity) {
     
     for (int i = 0; i < octaves; ++i) {
         float n = 1.0 - abs(snoise(x * f)); // Invertir y valor absoluto = Crestas
-        n = n * n; // Afilar crestas (Cuadrado)
+        n = clamp(n, 0.0, 1.0);
+        n = n * n * n; // Afilar crestas
+        v += n * a;
+        max_amp += a;
+        a *= persistence;
+        f *= lacunarity;
+        // <-- AÑADIR ESTA LÍNEA TAMBIÉN
+        x = x * lacunarity + vec3(9.87, 6.54, 3.21);
+    }
+    return v / max_amp;
+}
+
+// // FBM Estándar
+// float simple_fbm(vec3 x, int octaves, float persistence, float lacunarity) {
+//     float v = 0.0;
+//     float a = 1.0;
+//     float f = 1.0;
+//     float max_amp = 0.0;
+//     for (int i = 0; i < octaves; ++i) {
+//         v += snoise(x * f) * a;
+//         max_amp += a;
+//         a *= persistence;
+//         f *= lacunarity;
+//     }
+//     return v / max_amp;
+// }
+
+// Ruido "Rocoso" (Ridged) con control de agudeza
+float rigid_noise(vec3 x, int octaves, float persistence, float lacunarity, float sharpness) {
+    float v = 0.0;
+    float a = 1.0;
+    float f = 1.0;
+    float max_amp = 0.0;
+    for (int i = 0; i < octaves; ++i) {
+        float n = 1.0 - abs(snoise(x * f)); 
+        n = clamp(n, 0.0, 1.0);  // ← CRÍTICO: evita pow(negativo)
+        n = n * n * n;           // ← polinomio fijo reemplaza pow(variable)
         v += n * a;
         max_amp += a;
         a *= persistence;
@@ -113,49 +150,75 @@ float ridge_fbm(vec3 x, int octaves, float persistence, float lacunarity) {
     return v / max_amp;
 }
 
+
 // --- LOGICA PRINCIPAL (Estilo Lague) ---
+// --- LOGICA PRINCIPAL (Arquitectura de Biomas, como el shader viejo) ---
+// --- LOGICA PRINCIPAL (Arquitectura de Biomas, con anti-aliasing) ---
+// --- LOGICA PRINCIPAL (Con Frecuencias Desacopladas) ---
+// --- LOGICA PRINCIPAL (Con Frecuencias Desacopladas - Versión Limpia) ---
+// --- LOGICA PRINCIPAL (Arquitectura de Biomas, como el shader viejo) ---
 float get_terrain_height(vec3 dir) {
-    // 1. Extraer Parámetros
-    vec3  pos         = dir + params.global_offset.xyz;
-    float scale       = params.noise_settings.x; // NoiseScale
-    float persistence = params.noise_settings.y; // Usaremos fijo 0.5 o variable
-    float lacunarity  = params.noise_settings.z; // Usaremos fijo 2.0 o variable
-    int   octaves     = 6; // Calidad fija o params.noise_settings.w
+    vec3 pos = dir + params.global_offset.xyz;
+    float scale = params.noise_settings.x;
+    float warp_str = params.noise_settings.w;
+
+    // --- 1. DOMAIN WARPING (igual que antes, está bien) ---
+    vec3 warp_noise = vec3(snoise(pos * scale * 0.5), snoise(pos * scale * 0.5 + vec3(5.2)), snoise(pos * scale * 0.5 + vec3(1.3)));
+    vec3 p = pos + warp_noise * warp_str;
+
+    // --- 2. CALCULAR LAS CAPAS DE RUIDO INDEPENDIENTEMENTE ---
+    // Usamos los parámetros de tu C#
+    float d_freq = params.detail_params.x;
     
-    // Parámetros de "Estilo"
-    float ocean_floor = params.curve_params.x; // OceanFloorLevel
-    float mtn_strength= params.curve_params.y; // WeightMultiplier
-    // Usaremos MountainRoughness para controlar qué tan "picosas" son las montañas
-    
-    // 2. Continentes (Base Shape)
-    // Baja frecuencia, define tierra vs mar
-    float continent_shape = simple_fbm(pos * scale, octaves, 0.5, 2.0);
-    
-    // Mover rango de -1..1 a 0..1 aprox
-    float h = continent_shape * 0.5 + 0.5;
-    
-    // 3. Océanos (Aplanado)
-    // Si está por debajo del nivel del mar, aplanarlo
-    if (h < ocean_floor) {
-        // Suavizar un poco la transición al fondo marino
-        h = mix(0.0, ocean_floor, smoothstep(0.0, ocean_floor, h));
+    // Base continental (forma general)
+    float continent_shape = simple_fbm(p * scale, 5, 0.5, 2.0);
+    float h = continent_shape;
+
+    // Densidad de montañas (dónde van a aparecer)
+    float mountain_density = simple_fbm((p + vec3(100.0)) * scale * 1.5, 3, 0.5, 2.0);
+
+    // Detalle de suelo (para llanuras)
+    float ground_detail = simple_fbm(p * scale * d_freq * 0.5, 3, 0.5, 2.0) * 0.05; // Menor amplitud
+
+    // --- 3. LÓGICA DE BIOMAS (Mezcla, no adición) ---
+    float sea_level = params.curve_params.x; // Usamos OceanFloorLevel como sea_level
+
+    if (h > sea_level) {
+        // --- ESTAMOS EN TIERRA ---
+        
+        // Suavizar la transición costa/tierra
+        float land_factor = smoothstep(sea_level, sea_level + 0.1, h);
+
+        // Crear la máscara de bioma (Montaña vs Llanura) usando tus parámetros
+        float mask_start = params.detail_params.z; // 0.6
+        float mask_end = params.detail_params.w;   // 0.75
+        float is_mountain = smoothstep(mask_start, mask_end, mountain_density);
+        
+        // Generar los terrenos del bioma
+        float ridges = rigid_noise(p * scale * d_freq, 6, 0.5, 2.0, params.detail_params.y);
+        float ridges_sharp = ridges * ridges; // Afilar un poco, sin ser tan agresivo
+        
+        float mtns = ridges_sharp * params.curve_params.y; // Usamos WeightMultiplier como fuerza
+        
+        float plains = ground_detail * 2.0;
+
+        // MEZCLAR LOS BIOMAS, NO SUMARLOS
+        float land_shape = mix(plains, mtns, is_mountain);
+        
+        // Añadir el resultado mezclado a la base continental
+        h += land_shape * land_factor;
+
     } else {
-        // 4. Montañas (Solo en tierra)
-        // Máscara: ¿Dónde permitimos montañas?
-        // Usamos una versión offset del ruido para que no se alinee perfectamente con los continentes
-        float mtn_mask = simple_fbm((pos + vec3(12.5)) * scale * 2.0, 3, 0.5, 2.0);
-        mtn_mask = smoothstep(0.15, 0.55, mtn_mask * 0.5 + 0.5); // 0 = llanura, 1 = zona montañosa
-        
-        // Ruido de Crestas (Ridge)
-        // Mayor frecuencia (scale * 3.0) para detalle
-        float ridges = ridge_fbm(pos * scale * 3.0, 5, 0.5, 2.0);
-        
-        // Sumar montañas a la base, modulado por la máscara y la fuerza
-        h += ridges * mtn_mask * mtn_strength * 0.5;
+        // --- ESTAMOS EN EL MAR ---
+        // Añadir detalle al fondo marino
+        h += ground_detail; 
     }
 
-    return h; // Devuelve 0-1 (puede pasarse de 1 con las montañas, está bien)
+    // Normalizar salida a [0, 1]
+    return h * 0.5 + 0.5;
 }
+
+
 
 // Exagera los valores altos (crea picos) y aplana los bajos
 float ease_in_cubic(float x) {
@@ -197,45 +260,41 @@ vec3 get_direction(uvec3 id, float size) {
 void main() {
     uvec3 id = gl_GlobalInvocationID;
     float resolution = params.res_offset.x;
-    
-    if (id.x >= uint(resolution) || id.y >= uint(resolution)) return;
 
+    if (id.x >= uint(resolution) || id.y >= uint(resolution)) {
+        return;
+    }
+
+    // Dirección esférica estable desde cubemap
     vec3 dir = get_direction(id, resolution);
 
-    // 1. ALTURA BASE
-    float h_01 = get_terrain_height(dir);
-    float amplitude = params.curve_params.z; 
-    float radius = params.curve_params.w;
+    // 1. ALTURA (única fuente geométrica)
+    float h_val = get_terrain_height(dir);
+    h_val = clamp(h_val, 0.0, 1.0);  // ← AGREGAR: evita overflow amplitude
+    float amplitude = params.curve_params.z; // Esto está correcto, pero ahora es exclusivo para altura.
+
+    float h_final = h_val * amplitude;
     
-    float h_final = h_01 * amplitude;
-    
-    imageStore(height_map, ivec3(id), vec4(h_final, 0.0, 0.0, 1.0));
+    imageStore(
+        height_map,
+        ivec3(id),
+        vec4(h_final, 0.0, 0.0, 1.0)
+    );
 
-    // 2. NORMALES (Método de diferencias finitas en esfera)
-    // Calculamos 3 muestras muy cercanas para sacar la pendiente
-    float eps = 1.0 / resolution; 
-    vec3 tangent = normalize(cross(dir, vec3(0,1,0)));
-    if (length(tangent) < 0.001) tangent = normalize(cross(dir, vec3(1,0,0)));
-    vec3 bitangent = normalize(cross(dir, tangent));
-    
-    float h_right = get_terrain_height(normalize(dir + tangent * eps)) * amplitude;
-    float h_up    = get_terrain_height(normalize(dir + bitangent * eps)) * amplitude;
-
-    vec3 p_c = dir * (radius + h_final);
-    vec3 p_r = normalize(dir + tangent * eps) * (radius + h_right);
-    vec3 p_u = normalize(dir + bitangent * eps) * (radius + h_up);
-
-    vec3 n_geom = normalize(cross(p_u - p_c, p_r - p_c)); // Ojo: orden del cross product define dirección
-    imageStore(normal_map, ivec3(id), vec4(n_geom, 1.0));
-
-    // 3. VECTOR FIELD (Opcional, basado en curl noise)
+    // 2. VECTOR FIELD (independiente de normales)
     vec3 flow = curl_noise(dir * params.noise_settings.x * 2.0);
-    // Proyectar sobre la superficie
-    flow = normalize(flow - dot(flow, n_geom) * n_geom);
-    imageStore(vector_field, ivec3(id), vec4(flow, 1.0));
-    
-    // 4. STATS BUFFER
+    flow = normalize(flow - dot(flow, dir) * dir); // proyectado al plano tangente
+
+    imageStore(
+        vector_field,
+        ivec3(id),
+        vec4(flow, 1.0)
+    );
+
+    // 3. STATS
+    h_final = clamp(h_final, -1000.0, 1000.0);  // ← AGREGAR: protege atomic
     int h_fixed = int(h_final * FIXED_POINT_SCALE);
+    h_final = clamp(h_final, -1000.0, 1000.0);  // ← AGREGAR: protege atomic
     atomicMin(stats.min_h_fixed, h_fixed);
     atomicMax(stats.max_h_fixed, h_fixed);
 }

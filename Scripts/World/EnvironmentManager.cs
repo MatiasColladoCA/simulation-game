@@ -119,7 +119,7 @@ public partial class EnvironmentManager : Node
 		_poisData = newPois;
 		
 		// Asegurarse de que newPois venga con W normalizado desde el controlador
-		// O renormalizar aquí si fuera necesario. Asumimos que SimulationController ya manda datos correctos.
+		// O renormalizar aquí si fuera necesario. Asumimos que Main ya manda datos correctos.
 		
 		byte[] data = MemoryMarshal.AsBytes(_poisData.AsSpan()).ToArray();
 		_rd.BufferUpdate(POIBuffer, 0, (uint)data.Length, data);

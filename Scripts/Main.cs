@@ -1,14 +1,14 @@
 using Godot;
 using System; // Necesario para Buffer.BlockCopy
 using System.Runtime.InteropServices;
+// using Scripts.Contracts;
 
-
-public partial class SimulationController : Node
+public partial class Main : Node
 {
 	// --- DEPENDENCIAS DE ESCENA ---
 	[Export] public PlanetBaker Baker;
 	[Export] public AgentSystem AgentSys;
-	[Export] public PlanetRender PlanetRenderer;
+	[Export] public PlanetRender PlanetRender;
 	[Export] public SimulationUI UI;
 	[Export] public EnvironmentManager Environment;
 	[Export] public RDShaderFile PoiPainterShader;
@@ -28,6 +28,16 @@ public partial class SimulationController : Node
 	[Export(PropertyHint.Range, "0,1")] public float GlobalHumidity = 0.5f;   // Controla nivel del mar
 	[Export(PropertyHint.Range, "0,1")] public float GlobalTemperature = 0.5f; // Controla nieve/hielo
 
+
+	[ExportGroup("Noise Fine Tuning")]
+	[Export] public float WarpStrength = 0.15f;      // Antes hardcoded 0.15
+	[Export] public float DetailFrequency = 4.0f;    // Antes hardcoded 4.0
+	[Export] public float RidgeSharpness = 2.5f;     // Antes hardcoded 2.5
+	
+	[Export(PropertyHint.Range, "0,1")] public float MaskStart = 0.6f; // Antes 0.6
+	[Export(PropertyHint.Range, "0,1")] public float MaskEnd = 0.75f;  // Antes 0.75
+
+
 	// --- VARIABLES INTERNAS ---
 	private PoiPainter _poiPainter;
 	private RenderingDevice _rd;
@@ -44,6 +54,9 @@ public partial class SimulationController : Node
 	// Buffer en GPU para los parámetros (Binding 4)
 	private Rid _paramsBuffer; 
 
+	
+
+
 	// Propiedades públicas
 	public float CurrentWaterLevel { get; private set; }
 	public float CurrentSnowLevel { get; private set; }
@@ -52,7 +65,7 @@ public partial class SimulationController : Node
 	{
 		_rd = RenderingServer.GetRenderingDevice();
 		
-		if (Baker == null || AgentSys == null || PlanetRenderer == null || UI == null || Environment == null || PoiPainterShader == null)
+		if (Baker == null || AgentSys == null || PlanetRender == null || UI == null || Environment == null || PoiPainterShader == null)
 		{
 			GD.PrintErr("[SimController] Faltan dependencias en el Inspector.");
 			return;
@@ -85,28 +98,55 @@ public partial class SimulationController : Node
 		// Aquí definimos los parámetros para el estilo "Lague"
 		_currentConfig = new PlanetParamsData {
 			Radius = 100.0f,
-			Resolution = 512, // Usa 256 si va lento
+			ResolutionF = 1024.0f, // Usa 256 si va lento
 			NoiseOffset = seedOffset,
 
 			// A. RUIDO BASE (Forma de continentes)
-			NoiseScale = 0.8f,       // Bajo = Continentes grandes. Alto = Islas pequeñas.
-			NoiseHeight = 40.0f,     // Amplitud máxima de montañas
+			NoiseScale = 0.6f,       // Bajo = Continentes grandes. Alto = Islas pequeñas.
+			NoiseHeight = 70.0f,     // Amplitud máxima de montañas
 			
 			// B. PARÁMETROS DE ESCULPIDO (Computer Shader)
-			OceanFloorLevel = 0.45f,   // 0.0 a 1.0. Cuanto más bajo, más tierra.
-			MountainRoughness = 2.0f,  // Controla la lacunaridad o detalle fino
-			WeightMultiplier = 1.8f    // Fuerza de las montañas
+			OceanFloorLevel = 0.45f, //0.45f,   // 0.0 a 1.0. Cuanto más bajo, más tierra.
+			WeightMultiplier = 3.5f,   // Fuerza de las montañas
+			
+			// AAA Tuning (Valores "Roca Orgánica")
+			WarpStrength = 0.15f,      // Sutil, solo para romper simetría
+			DetailFrequency = 7.0f,    // Detalle rocoso estándar
+			RidgeSharpness = 2.5f,     // Picos definidos
+			
+			GroundDetailFreq = 5.5f,   // <-- ¡CLAVE! Muy bajo para un suelo liso y orgánico.
+			// --- SUELO (Baja frecuencia para llanuras suaves) ---
+
+			
+			MaskStart = 0.6f,          // Montañas solo en zonas altas
+			MaskEnd = 0.75f,            // Transición suave
+			
+			MountainRoughness = 2.0f  // Controla la lacunaridad o detalle fino
+		
 		};
+
+
+		void ValidatePlanetConfig(PlanetParamsData c)
+		{
+			c.WarpStrength = c.WarpStrength <= 0.001f ? 0.15f : c.WarpStrength;
+			c.DetailFrequency = c.DetailFrequency <= 0.001f ? 4.0f : c.DetailFrequency;
+			c.RidgeSharpness = c.RidgeSharpness <= 0.001f ? 2.5f : c.RidgeSharpness;
+			c.MaskEnd = c.MaskEnd <= c.MaskStart ? c.MaskStart + 0.1f : c.MaskEnd;
+		}
+
+		ValidatePlanetConfig(_currentConfig);
+
 
 		// ---------------------------------------------------------
 		// 2. ENVIAR DATOS A LA GPU (Binding 4)
 		// ---------------------------------------------------------
 		// Inicializamos el buffer si el Baker no lo ha hecho, o usamos el del Baker.
-		// Asumo aquí que SimulationController gestiona la actualización.
+		// Asumo aquí que Main gestiona la actualización.
 		UpdateShaderBuffer();
 
 		// Pasamos la config (metadata) al Baker por si la necesita en C#
 		Baker.SetParams(_currentConfig);
+
 
 		// ---------------------------------------------------------
 		// 3. BAKE DEL TERRENO (GPU EXECUTION)
@@ -127,6 +167,13 @@ public partial class SimulationController : Node
 		{
 			 GD.PrintErr("[ALERTA] El planeta es plano. Verifica que UpdateShaderBuffer() se esté llamando antes del Dispatch.");
 		}
+
+
+		// 2. Preparar Datos Visuales (RenderData)
+		// Aquí defines colores, etc. que NO afectan la geometría
+		// var renderData = new PlanetRenderInitData {
+
+
 
 		// ---------------------------------------------------------
 		// 4. LÓGICA DE NIVELES (CPU)
@@ -169,7 +216,11 @@ public partial class SimulationController : Node
 		// ---------------------------------------------------------
 		// 6. INICIALIZAR SUBSISTEMAS
 		// ---------------------------------------------------------
-		Environment.Initialize(_rd, bakeResult.HeightMapRid, bakeResult.VectorFieldRid, _currentConfig);
+		Environment.Initialize(
+			_rd,
+			bakeResult.HeightMapRid,
+			bakeResult.VectorFieldRid,
+			_currentConfig);
 
 		// Esperar un frame para asegurar texturas
 		await ToSignal(GetTree(), "process_frame");
@@ -178,8 +229,8 @@ public partial class SimulationController : Node
 		var fmt = new RDTextureFormat
 		{
 			TextureType = RenderingDevice.TextureType.Cube,
-			Width = (uint)_currentConfig.Resolution,
-			Height = (uint)_currentConfig.Resolution,
+			Width = (uint)_currentConfig.ResolutionF,
+			Height = (uint)_currentConfig.ResolutionF,
 			Depth = 1,
 			ArrayLayers = 6,
 			Format = RenderingDevice.DataFormat.R16G16B16A16Sfloat,
@@ -202,29 +253,40 @@ public partial class SimulationController : Node
 		// ---------------------------------------------------------
 		// 7. INICIALIZAR AGENTES Y RENDERER
 		// ---------------------------------------------------------
-		AgentSys.Initialize(_rd, Environment, _currentConfig); 
+		AgentSys.Initialize(
+			_rd,
+			Environment,
+			_currentConfig); 
 
 		// Pintar Influencia Inicial
 		// NOTA: Asegúrate de que Baker exponga su ParamsBuffer si lo necesitamos aquí, 
 		// o usa el _paramsBuffer local si es el mismo binding.
-		_poiPainter.PaintInfluence(influenceTex, Environment.POIBuffer, GetParamsBufferRid(), (uint)_currentConfig.Resolution);
+		_poiPainter.PaintInfluence(influenceTex, Environment.POIBuffer, GetParamsBufferRid(), (float)_currentConfig.ResolutionF);
 		
 		await ToSignal(GetTree(), "process_frame");
 
-		PlanetRenderer.Initialize(
-			bakeResult.HeightMapRid,
-			bakeResult.VectorFieldRid,
-			bakeResult.NormalMapRid,
-			_currentConfig
+
+
+
+		PlanetRender.Initialize(
+			bakeResult.HeightMapRid,   // Rid
+			bakeResult.VectorFieldRid, // Rid
+			bakeResult.NormalMapRid,   // Rid
+			_currentConfig.Radius,     // float
+			bakeResult.MinHeight,      // float (Calculado por GPU)
+			bakeResult.MaxHeight      // float (Calculado por GPU)
+			// renderData                 // Struct Visual		);
 		);
 
-		PlanetRenderer.SetInfluenceMap(influenceTex);
-		PlanetRenderer.SetBiomeLevels(CurrentWaterLevel, CurrentSnowLevel, realMin, realMax);
-		PlanetRenderer.ApplyBiomeData(currentBiomeData);
-		PlanetRenderer.SetViewPoiField(_isViewPoiField);
+		
+
+		PlanetRender.SetInfluenceMap(influenceTex);
+		PlanetRender.UpdateEnvironmentLevels(CurrentWaterLevel, CurrentSnowLevel, realMin, realMax);
+		PlanetRender.ApplyBiomeData(currentBiomeData);
+		PlanetRender.SetViewPoiField(_isViewPoiField);
 
 		_isRunning = true;
-		GD.Print("[SimulationController] Initialized AAA Pipeline.");
+		GD.Print("[Main] Initialized AAA Pipeline.");
 	}
 
 	public override void _Process(double delta)
@@ -254,13 +316,13 @@ public partial class SimulationController : Node
 			_currentConfig.NoiseScale, 
 			0.5f,  // Persistence (Valor estándar para look orgánico)
 			2.0f,  // Lacunarity (Valor estándar)
-			6.0f,  // Octaves (Detalle)
+			_currentConfig.WarpStrength,  // Octaves (Detalle)
 
 			// vec4 curve_params (x: ocean, y: weight, z: height, w: radius)
 			_currentConfig.OceanFloorLevel,
 			_currentConfig.WeightMultiplier,
 			_currentConfig.NoiseHeight,
-			_currentConfig.Radius,
+			_currentConfig.GroundDetailFreq,
 
 			// vec4 global_offset (xyz: seed)
 			_currentConfig.NoiseOffset.X, 
@@ -268,11 +330,15 @@ public partial class SimulationController : Node
 			_currentConfig.NoiseOffset.Z, 
 			0.0f, // Padding
 
-			// vec4 pad_center (unused)
-			0,0,0,0,
+			// vec4 detail_params (ANTES ERA pad_center)
+			// AQUI METEMOS LAS NUEVAS PERILLAS:
+			_currentConfig.DetailFrequency,  // x
+			_currentConfig.RidgeSharpness,   // y
+			_currentConfig.MaskStart,        // z
+			_currentConfig.MaskEnd,
 
 			// vec4 res_offset (x: resolution)
-			(float)_currentConfig.Resolution, 0,0,0,
+			(float)_currentConfig.ResolutionF, 0,0,0,
 
 			// vec4 pad_uv (unused)
 			0,0,0,0
@@ -347,13 +413,13 @@ public partial class SimulationController : Node
 			if (keyEvent.Keycode == Key.F)
 			{
 				_isViewVectorField = !_isViewVectorField;
-				PlanetRenderer.SetViewVectorField(_isViewVectorField);
+				PlanetRender.SetViewVectorField(_isViewVectorField);
 				GD.Print($"[Visuals] Vector Field Debug: {_isViewVectorField}");
 			}
 			else if (keyEvent.Keycode == Key.G)
 			{
 				_isViewPoiField = !_isViewPoiField;
-				PlanetRenderer.SetViewPoiField(_isViewPoiField);
+				PlanetRender.SetViewPoiField(_isViewPoiField);
 				GD.Print($"[Visuals] POI Field Debug: {_isViewPoiField}");
 			}
 		
@@ -463,7 +529,7 @@ public partial class SimulationController : Node
 			0, 0, 0, 0,
 
 			// vec4 res_offset (x: Resolution)
-			(float)config.Resolution, 0, 0, 0,
+			(float)config.ResolutionF, 0, 0, 0,
 
 			// vec4 pad_uv (Relleno final)
 			0, 0, 0, 0 

@@ -1,11 +1,12 @@
 using Godot;
 using System.Collections.Generic;
+// using Scripts.Contracts;
 
 public partial class PlanetRender : Node3D
 {
 	// LOD Settings
 	[Export] public int PatchResolution = 32; // Resolución de cada parche (16x16 o 32x32)
-	[Export(PropertyHint.Range, "0.0, 1.0")] public float WaterLevel = 0.45f; 
+	// [Export(PropertyHint.Range, "0.0, 1.0")] public float WaterLevel = 0.45f; 
 
 	private Mesh _patchMesh; // Malla base reutilizable
 	private ShaderMaterial _planetMaterial;
@@ -15,7 +16,7 @@ public partial class PlanetRender : Node3D
 	// Estado
 	private float _currentRadius;
 	private float _currentNoiseHeight;
-	private float _lastWaterLevel = -1;
+	// private float _lastWaterLevel = -1;
 
 	private bool _isViewVectorField = false;
 	private bool _isViewPoiField = false;
@@ -23,17 +24,28 @@ public partial class PlanetRender : Node3D
 	private Rid _vectorFieldRid;
 	private Rid _normalMapRid;
 
+	// private float _waterLevel;
+	// private float _snowLevel;
+
+	private float _maxHeight;
+
+
 
 	// --- REEMPLAZAR FIRMA Y ASIGNACIONES EN PlanetRender.cs ---
-	// public void Initialize(Rid heightMapRid, Rid vectorMapRid, float radius, float heightMultiplier)
-	public void Initialize(Rid heightMapRid, Rid vectorMapRid, Rid normalMapRid, PlanetParamsData config)
+	public void Initialize(
+		Rid heightMapRid, 
+		Rid vectorFieldRid, 
+		Rid normalMapRid, 
+		float radius, 
+		float minHeight, 
+		float maxHeight
+		// PlanetParamsData visualData // (Opcional) Colores, texturas de bioma
+	)
 	{
-		// _currentRadius = radius;
-		// _currentNoiseHeight = heightMultiplier;
-		_currentRadius = config.Radius;
-		_currentNoiseHeight = config.NoiseHeight;
+		_currentRadius = radius;
+		_maxHeight = maxHeight;
 
-		// 1. Configurar Material
+
 		// 1. Configurar Material
 		if (_planetMaterial == null)
 		{
@@ -43,60 +55,92 @@ public partial class PlanetRender : Node3D
 		
 		// 2. TEXTURAS (GPU)
 		// Nota: TextureCubemapRD es vital para que Godot entienda RIDs de Vulkan
-		var hMap = new TextureCubemapRD { TextureRdRid = heightMapRid };
-		_planetMaterial.SetShaderParameter("height_map_gpu", hMap);
 
-		var vMap = new TextureCubemapRD { TextureRdRid = vectorMapRid };
-		_planetMaterial.SetShaderParameter("vector_field_gpu", vMap);
-
-		var nMap = new TextureCubemapRD { TextureRdRid = normalMapRid };
-		_planetMaterial.SetShaderParameter("normal_map_gpu", nMap);
-
-		// 3. PARÁMETROS FÍSICOS CONSTANTES
-		_planetMaterial.SetShaderParameter("planet_radius", config.Radius);
 		
-		// ELIMINADO: "noise_amplitude" (El shader ya lee altura real en metros del canal R)
-		// ELIMINADO: "water_level_norm" (El shader espera metros absolutos)
-		
-		// Inicialización segura de valores absolutos (se sobreescribirán en SetBiomeLevels)
-		_planetMaterial.SetShaderParameter("min_height_absolute", 0.0f);
-		_planetMaterial.SetShaderParameter("max_height_absolute", config.NoiseHeight);
+		// 2. VINCULAR TEXTURAS DE VULKAN (RD -> Godot)
+		// TextureCubemapRD actúa como puente para usar RIDs de Compute en Shaders visuales
+		var hTex = new TextureCubemapRD { TextureRdRid = heightMapRid };
+		var vTex = new TextureCubemapRD { TextureRdRid = vectorFieldRid };
+		var nTex = new TextureCubemapRD { TextureRdRid = normalMapRid };
 
-		// Uniforms Globales
-		// var hMap = new TextureCubemapRD { TextureRdRid = heightMapRid };
-		// _planetMaterial.SetShaderParameter("height_map_gpu", hMap);
-		
-		// _planetMaterial.SetShaderParameter("planet_radius", radius);
-		// _planetMaterial.SetShaderParameter("noise_amplitude", heightMultiplier);
-		// _planetMaterial.SetShaderParameter("planet_radius", config.Radius);
-		// _planetMaterial.SetShaderParameter("noise_amplitude", config.NoiseHeight);
-		
-		// _planetMaterial.SetShaderParameter("water_level_norm", WaterLevel);
+		_planetMaterial.SetShaderParameter("height_map_gpu", hTex);
+		_planetMaterial.SetShaderParameter("vector_field_gpu", vTex);
+		_planetMaterial.SetShaderParameter("normal_map_gpu", nTex);
 
-		// _vectorFieldRid = vectorMapRid;
-		// var vMap = new TextureCubemapRD { TextureRdRid = vectorMapRid };
-		// _planetMaterial.SetShaderParameter("vector_field_gpu", vMap);
-
-		// _normalMapRid = normalMapRid;
-		// var nMap = new TextureCubemapRD { TextureRdRid = normalMapRid };
-		// _planetMaterial.SetShaderParameter("normal_map_gpu", nMap);
-
+		// 3. PARÁMETROS FÍSICOS
+		_planetMaterial.SetShaderParameter("planet_radius", radius);
+		_planetMaterial.SetShaderParameter("min_height_absolute", minHeight);
+		_planetMaterial.SetShaderParameter("max_height_absolute", maxHeight);
 
 
 		// 2. Generar Mesh Base (Una sola vez)
 		if (_patchMesh == null) GeneratePatchMesh();
 
-		// 3. Inicializar Sistema Quadtree
-		// InitializeQuadtree(radius);
-		InitializeQuadtree(config.Radius);
+		InitializeWater();
+
 
 		// 4. Agua
-		UpdateWaterVisuals(true);
+		// UpdateWaterVisuals(true);
 
-		// VERIFICACIÓN CRÍTICA:
+		// 5. ASIGNAR AL MESH
 		var meshInstance = GetNodeOrNull<MeshInstance3D>("PlanetMesh");
-		if (meshInstance != null) {
-			meshInstance.MaterialOverride = _planetMaterial;
+		if (meshInstance == null)
+		{
+			// Si no existe, créalo o búscalo dinámicamente
+			meshInstance = new MeshInstance3D();
+			meshInstance.Name = "PlanetMesh";
+			AddChild(meshInstance);
+			// Aquí deberías generar tu QuadTree o CubeSphere mesh
+			// GeneratePatchMesh(); 
+		}
+		meshInstance.MaterialOverride = _planetMaterial;
+
+
+		// 3. Inicializar Sistema Quadtree
+		// InitializeQuadtree(radius);
+		InitializeQuadtree(radius);
+
+	}
+
+
+	// --- AÑADIR estos dos nuevos métodos en PlanetRender.cs ---
+
+	// Crea la malla y el material del agua una sola vez.
+	private void InitializeWater()
+	{
+		// Crear el MeshInstance3D si no existe
+		if (_waterMesh == null)
+		{
+			_waterMesh = new MeshInstance3D { Name = "WaterSphere" };
+			AddChild(_waterMesh);
+			
+			// Material básico para el agua (puedes reemplazarlo por un shader personalizado más tarde)
+			var waterMaterial = new StandardMaterial3D();
+			waterMaterial.Transparency = BaseMaterial3D.TransparencyEnum.Alpha;
+			waterMaterial.AlbedoColor = new Color(0.0f, 0.3f, 0.6f, 0.7f);
+			waterMaterial.Roughness = 0.1f;
+			waterMaterial.Metallic = 0.8f;
+			// Un poco de emisión para que no sea completamente negro en la sombra
+			waterMaterial.EmissionEnabled = true; 
+			waterMaterial.Emission = new Color(0.0f, 0.1f, 0.2f);
+			waterMaterial.EmissionEnergyMultiplier = 0.3f;
+
+			_waterMesh.MaterialOverride = waterMaterial;
+			_waterMesh.CastShadow = GeometryInstance3D.ShadowCastingSetting.Off; // El agua no proyecta sombra
+			_waterMesh.Mesh = new SphereMesh();
+		}
+	}
+
+	// Actualiza el radio de la esfera del agua para que coincida con el nivel del mar.
+	// <param name="waterLevelAbsolute">La altura absoluta del nivel del mar en unidades del mundo.</param>
+	private void UpdateWaterRadius(float waterLevelAbsolute)
+	{
+		if (_waterMesh != null && _waterMesh.Mesh is SphereMesh sphere)
+		{
+			// El radio de la esfera de agua es simplemente la altura absoluta del nivel del mar.
+			float waterSphereRadius = (_currentRadius * 0.5f) + waterLevelAbsolute;
+			sphere.Radius = waterSphereRadius;
+			sphere.Height = waterSphereRadius * 2.0f;
 		}
 	}
 
@@ -167,22 +211,17 @@ public partial class PlanetRender : Node3D
 		}
 	}
 
+	// --- REEMPLAZAR el método _Process ---
 	public override void _Process(double delta)
 	{
-		// Actualizar Agua (Dirty flag)
-		if (!Mathf.IsEqualApprox(WaterLevel, _lastWaterLevel)) UpdateWaterVisuals(false);
-
 		// --- ACTUALIZACIÓN DE QUADTREE ---
 		if (_rootChunks == null) return;
 
-		// 1. Obtener cámara
 		var cam = GetViewport().GetCamera3D();
 		if (cam == null) return;
 
-		// 2. Pasar datos al sistema de chunks
 		PlanetChunk.CameraPos = cam.GlobalPosition;
 
-		// 3. Actualizar árbol (Split/Merge)
 		foreach (var chunk in _rootChunks) chunk.Update();	
 	}
 
@@ -197,28 +236,19 @@ public partial class PlanetRender : Node3D
 	}
 
 
-	// // --- NUEVO MÉTODO PARA RECIBIR LA TEXTURA ---
-	// public void SetInfluenceMap(Rid influenceMapRid)
-	// {
-	// 	if (_planetMaterial == null) return;
-
-	// 	// IMPORTANTE: TextureCubemapRD para que el shader entienda que es un Cubemap
-	// 	var texWrapper = new TextureCubemapRD();
-	// 	texWrapper.TextureRdRid = influenceMapRid;
-
-	// 	_planetMaterial.SetShaderParameter("influence_texture", texWrapper);
-	// }
-
-	// Este método lo llama SimulationController.cs en el paso 5 del _Ready
-	public void SetBiomeLevels(float waterLevelAbs, float snowLevelAbs, float minHeight, float maxHeight)
+	// Este método lo llama Main.cs en el paso 5 del _Ready
+	public void UpdateEnvironmentLevels(float waterLevelAbs, float snowLevelAbs, float minHeight, float maxHeight)
+{
+	// Actualizar el shader del terreno con los niveles
+	if (_planetMaterial != null)
 	{
-		if (_planetMaterial == null) return;
-
 		_planetMaterial.SetShaderParameter("water_level", waterLevelAbs);
 		_planetMaterial.SetShaderParameter("snow_level", snowLevelAbs);
-		_planetMaterial.SetShaderParameter("min_height_absolute", minHeight);
-		_planetMaterial.SetShaderParameter("max_height_absolute", maxHeight);
 	}
+
+	// <-- CAMBIO CLAVE: Actualizar la geometría del agua -->
+	UpdateWaterRadius(waterLevelAbs);
+}
 
 	public void SetInfluenceMap(Rid influenceRid)
 	{
@@ -241,30 +271,30 @@ public partial class PlanetRender : Node3D
 
 
 
-	private void UpdateWaterVisuals(bool force)
-	{
-		_lastWaterLevel = WaterLevel;
-		if (_planetMaterial != null) _planetMaterial.SetShaderParameter("water_level_norm", WaterLevel);
+	// private void UpdateWaterVisuals(bool force)
+	// {
+	// 	_lastWaterLevel = WaterLevel;
+	// 	if (_planetMaterial != null) _planetMaterial.SetShaderParameter("water_level_norm", WaterLevel);
 
-		float r = _currentRadius + (_currentNoiseHeight * WaterLevel);
+	// 	float r = _currentRadius + (_currentNoiseHeight * WaterLevel);
 		
-		if (_waterMesh == null) {
-			_waterMesh = new MeshInstance3D { Name = "WaterSphere" };
-			AddChild(_waterMesh);
-			var mat = new StandardMaterial3D();
-			mat.Transparency = BaseMaterial3D.TransparencyEnum.Alpha;
-			mat.AlbedoColor = new Color(0.0f, 0.2f, 0.8f, 0.6f);
-			mat.Roughness = 0.1f; mat.Metallic = 0.5f;
-			mat.EmissionEnabled = true; mat.Emission = new Color(0.0f, 0.1f, 0.3f);
-			mat.EmissionEnergyMultiplier = 0.5f;
-			_waterMesh.MaterialOverride = mat;
-			_waterMesh.Mesh = new SphereMesh();
-		}
+	// 	if (_waterMesh == null) {
+	// 		_waterMesh = new MeshInstance3D { Name = "WaterSphere" };
+	// 		AddChild(_waterMesh);
+	// 		var mat = new StandardMaterial3D();
+	// 		mat.Transparency = BaseMaterial3D.TransparencyEnum.Alpha;
+	// 		mat.AlbedoColor = new Color(0.0f, 0.2f, 0.8f, 0.6f);
+	// 		mat.Roughness = 0.1f; mat.Metallic = 0.5f;
+	// 		mat.EmissionEnabled = true; mat.Emission = new Color(0.0f, 0.1f, 0.3f);
+	// 		mat.EmissionEnergyMultiplier = 0.5f;
+	// 		_waterMesh.MaterialOverride = mat;
+	// 		_waterMesh.Mesh = new SphereMesh();
+	// 	}
 
-		if (_waterMesh.Mesh is SphereMesh s) {
-			s.Radius = r; s.Height = r * 2;
-		}
-	}
+	// 	if (_waterMesh.Mesh is SphereMesh s) {
+	// 		s.Radius = r; s.Height = r * 2;
+	// 	}
+	// }
 
 
 	// Añadir dentro de PlanetRender.cs

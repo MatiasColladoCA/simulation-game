@@ -1,6 +1,6 @@
 [gd_scene load_steps=14 format=3 uid="uid://bbr5o4fhtiijr"]
 
-[ext_resource type="Script" uid="uid://bdjeo4q4rurl7" path="res://Scripts/SimulationController.cs" id="1_7mycd"]
+[ext_resource type="Script" uid="uid://cj0wls38ooum3" path="res://Scripts/Main.cs" id="1_4c57u"]
 [ext_resource type="Script" uid="uid://cfigf47cpsynr" path="res://Scripts/World/PlanetRender.cs" id="1_lquwl"]
 [ext_resource type="RDShaderFile" uid="uid://xnuj6qgxnse5" path="res://Shaders/Compute/simulation_sphere.glsl" id="2_1bvp3"]
 [ext_resource type="RDShaderFile" uid="uid://dw1nnja5i2vvf" path="res://Shaders/Compute/poi_painter.glsl" id="2_efxa6"]
@@ -20,30 +20,31 @@ height = 200.0
 radius = 100.0
 height = 200.0
 
-[node name="Main" type="Node3D" node_paths=PackedStringArray("Baker", "AgentSys", "PlanetRenderer", "UI", "Environment")]
-script = ExtResource("1_7mycd")
+[node name="Main" type="Node3D" node_paths=PackedStringArray("Baker", "AgentSys", "PlanetRender", "UI", "Environment")]
+script = ExtResource("1_4c57u")
 Baker = NodePath("PlanetBaker")
 AgentSys = NodePath("AgentSystem")
-PlanetRenderer = NodePath("WorldRenderer")
+PlanetRender = NodePath("WorldRenderer")
 UI = NodePath("CanvasLayer")
 Environment = NodePath("EnvironmentManager")
 PoiPainterShader = ExtResource("2_efxa6")
-GlobalHumidity = 0.304
-GlobalTemperature = 0.839
+GlobalHumidity = 0.789
 
 [node name="MeshInstance3D2" type="MeshInstance3D" parent="."]
+transform = Transform3D(1, 0, 0, 0, 1, 0, 0, 0, 1, 100, 0, 0)
 visible = false
 mesh = SubResource("SphereMesh_efxa6")
 
 [node name="DirectionalLight3D" type="DirectionalLight3D" parent="."]
 transform = Transform3D(0.7071068, 0.5, -0.5, 0, 0.70710677, 0.70710677, 0.7071068, -0.5, 0.5, -324.38684, 324.88275, 40)
+light_indirect_energy = 0.5
 light_bake_mode = 1
 
 [node name="WorldRenderer" type="Node3D" parent="."]
 script = ExtResource("1_lquwl")
-WaterLevel = 0.2
 
 [node name="PlanetMeshVisual" type="MeshInstance3D" parent="WorldRenderer"]
+visible = false
 mesh = SubResource("SphereMesh_dg77c")
 
 [node name="AgentSystem" type="Node3D" parent="."]
@@ -95,3 +96,5 @@ script = ExtResource("3_lquwl")
 [node name="EnvironmentManager" type="Node" parent="."]
 script = ExtResource("9_kek77")
 PoiMeshScene = ExtResource("10_4c57u")
+
+[node name="PlanetTuner" type="Node3D" parent="."]

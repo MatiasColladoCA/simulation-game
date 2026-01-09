@@ -380,7 +380,7 @@ public partial class AgentSystem : Node3D
 	// --- LOCALIZACIÓN: AgentSystem.cs -> Método SpawnAgent() ---
 
 	public void SpawnAgent(Vector3 worldPos, int index)
-	{
+	{ 
 		if (_rd == null || !_isInitialized) return;
 
 		// 1. Extraer el dato actual del pool (Copia)
