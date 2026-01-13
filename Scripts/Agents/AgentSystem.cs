@@ -129,6 +129,12 @@ public partial class AgentSystem : Node3D
 		// Sincronización implícita mediante lectura de contador
 		byte[] counterBytes = _rd.BufferGetData(_counterBufferRid);
 		ActiveAgentCount = BitConverter.ToUInt32(counterBytes, 0);
+
+		// DEBUG: Inspeccionar cada 60 frames (1 segundo aprox)
+		if (Engine.GetFramesDrawn() % 60 == 0) 
+		{
+			DebugInspectGPUResults();
+		}
 	}
 	
 
@@ -141,6 +147,9 @@ public partial class AgentSystem : Node3D
 
 	private unsafe void UpdatePushConstants(float delta, float time, uint phase, int customParam)
 	{
+		// Aseguramos espacio para 3 bloques de 16 bytes (vec4) = 48 bytes
+		if (_pushConstantBuffer.Length < 48) _pushConstantBuffer = new byte[48];
+	
 		fixed (byte* ptr = _pushConstantBuffer)
 		{
 			float* fPtr = (float*)ptr;
@@ -149,14 +158,79 @@ public partial class AgentSystem : Node3D
 			fPtr[0] = delta;         
 			fPtr[1] = time;          
 			fPtr[2] = _planetRadius;  
-			fPtr[3] = _noiseScale;    
+			fPtr[3] = _noiseScale;
+
 			fPtr[4] = _noiseHeight;   
-			
 			uPtr[5] = (uint)customParam; 
 			uPtr[6] = phase;             
-			uPtr[7] = (uint)GRID_RES;    
+			uPtr[7] = (uint)GRID_RES;  
+
 			uPtr[8] = (uint)DATA_TEX_WIDTH; 
+			// GD.Print(customParam.ToString());
 		}
+
+		// --- DEBUG: IMPRIMIR BYTES ---
+		// Solo hazlo una vez (ej: en el frame 1) para no inundar la consola
+		// if (Engine.GetFramesDrawn() % 600 == 0) // Imprime cada 10 segundos
+		// {
+		// 	string hex = BitConverter.ToString(_pushConstantBuffer);
+		// 	GD.Print("\n--- PUSH CONSTANT BUFFER (Hex Dump) ---");
+		// 	GD.Print(hex);
+			
+		// 	// Verificamos qué hay en la posición donde debería estar el Radio
+		// 	// Si usas mi esquema alineado, el Radio está en el float índice 2 (bytes 8,9,10,11)
+		// 	fixed (byte* p = _pushConstantBuffer) {
+		// 		float* floats = (float*)p;
+		// 		GD.Print($"[C# Check] Float[0] (Delta): {floats[0]}");
+		// 		GD.Print($"[C# Check] Float[1] (Time):  {floats[1]}");
+		// 		GD.Print($"[C# Check] Float[2] (RADIO): {floats[2]} <--- ESTO ENVIAMOS");
+		// 	}
+		// 	GD.Print("---------------------------------------");
+		// }
+	}
+
+
+
+	private void DebugInspectGPUResults()
+	{
+		// 1. Descargar los datos crudos de la textura de la GPU a la RAM
+		// Esto es "lento", úsalo solo para debug.
+		byte[] textureData = _rd.TextureGetData(_posTextureRid, 0);
+
+		if (textureData == null || textureData.Length == 0)
+		{
+			GD.PrintErr("[GPU INSPECTOR] La textura está vacía o no se pudo leer.");
+			return;
+		}
+
+		// 2. Leer el Primer Agente (Pixel 0,0)
+		// Formato RGBA32F = 16 bytes por pixel (4 floats de 4 bytes)
+		int offset = 0; 
+		
+		float x = BitConverter.ToSingle(textureData, offset + 0);
+		float y = BitConverter.ToSingle(textureData, offset + 4);
+		float z = BitConverter.ToSingle(textureData, offset + 8);
+		float w = BitConverter.ToSingle(textureData, offset + 12); // Vida / Estado
+
+		Vector3 pos = new Vector3(x, y, z);
+		float dist = pos.Length();
+
+		GD.Print("\n--- GPU OUTPUT INSPECTOR (Agent 0) ---");
+		GD.Print($"Posición Raw: {pos}");
+		GD.Print($"Distancia al Centro: {dist}");
+		GD.Print($"Estado (W): {w}");
+
+		// Diagnóstico inmediato
+		if (float.IsNaN(x) || float.IsNaN(y) || float.IsNaN(z))
+			GD.Print("VEREDICTO: [BASURA/NaN] -> El Compute Shader está leyendo mal los inputs o dividiendo por cero.");
+		else if (dist < 1.0f)
+			GD.Print("VEREDICTO: [CERO] -> El Compute Shader no está escribiendo o calcula 0.");
+		else if (dist > 99.0f && dist < 101.0f)
+			GD.Print("VEREDICTO: [CORRECTO] -> El Compute Shader funciona perfecto. EL CULPABLE ES EL AGENT_VISUAL (Render).");
+		else
+			GD.Print($"VEREDICTO: [ERROR MATEMÁTICO] -> El cálculo da {dist}, esperábamos ~100. Revisa la fórmula.");
+			
+		GD.Print("----------------------------------------\n");
 	}
 
 
@@ -217,7 +291,7 @@ public partial class AgentSystem : Node3D
 		// 2. INTENTAR OBTENER SPIR-V CON MANEJO DE ERRORES
 		RDShaderSpirV shaderSpirv;
 		try
-		{
+		{	// Se asigna en el inspector el shader que se usará como _pipelineRid
 			shaderSpirv = ComputeShaderFile.GetSpirV();
 		}
 		catch (Exception e)
@@ -239,6 +313,21 @@ public partial class AgentSystem : Node3D
 		{
 			GD.PrintErr($"[AgentSystem] Error de compilación del shader:\n{compileError}");
 			return;
+		}
+
+		// --- BLOQUE DE DIAGNÓSTICO DE COMPILACIÓN ---
+		string errorMsg = shaderSpirv.CompileErrorCompute;
+		if (!string.IsNullOrEmpty(errorMsg))
+		{
+			GD.PrintErr("---------------------------------------------------");
+			GD.PrintErr("🛑 ERROR CRÍTICO AL COMPILAR AGENT SHADER 🛑");
+			GD.PrintErr(errorMsg);
+			GD.PrintErr("---------------------------------------------------");
+			return; // Detener aquí para no causar los errores de Null Pipeline abajo
+		}
+		else
+		{
+			GD.Print("[AgentSystem] Shader GLSL compilado correctamente (Sintaxis OK).");
 		}
 
 		// 5. CREAR SHADER CON VALIDACIÓN
@@ -269,6 +358,16 @@ public partial class AgentSystem : Node3D
 
 		var samplerState = new RDSamplerState { MagFilter = RenderingDevice.SamplerFilter.Linear, MinFilter = RenderingDevice.SamplerFilter.Linear };
 		_samplerRid = _rd.SamplerCreate(samplerState);
+		// var samplerState = new RDSamplerState { 
+	// 	MagFilter = RenderingDevice.SamplerFilter.Linear, 
+	// 	MinFilter = RenderingDevice.SamplerFilter.Linear,
+	// 	AddressU = RenderingDevice.SamplerRepeatMode.Repeat, // Importante
+	// 	AddressV = RenderingDevice.SamplerRepeatMode.Repeat, // Importante
+	// 	AddressW = RenderingDevice.SamplerRepeatMode.Repeat  // ¡CRÍTICO PARA CUBEMAPS!
+	// };
+	// _samplerRid = _rd.SamplerCreate(samplerState);
+
+
 
 		int texHeight = Mathf.CeilToInt((float)AgentCount / DATA_TEX_WIDTH);
 		var fmt = new RDTextureFormat {
@@ -340,7 +439,7 @@ public partial class AgentSystem : Node3D
 			InstanceCount = AgentCount,
 			Mesh = new QuadMesh { 
 				Size = new Vector2(1.0f, 1.0f), 
-				Material = new ShaderMaterial { Shader = GD.Load<Shader>("res://Shaders/Visual/SphereImpostor.gdshader") } 
+				Material = new ShaderMaterial { Shader = GD.Load<Shader>("res://Shaders/Visual/agent_render.gdshader") } 
 			}
 		};
 		_visualizer.Multimesh.CustomAabb = new Aabb(new Vector3(-2000, -2000, -2000), new Vector3(4000, 4000, 4000));
@@ -449,6 +548,25 @@ public partial class AgentSystem : Node3D
 	public Rid GetInfluenceTexture()
 	{
 		return _densityTextureRid;
+	}
+
+	public Rid GetPosTextureRid()
+	{
+		if (!_posTextureRid.IsValid)
+		{
+			GD.PrintErr("[AgentSystem] Advertencia: Se intentó obtener PosTextureRid antes de inicializar.");
+		}
+		return _posTextureRid;
+	}
+
+	// Devuelve el ID de la textura donde el Compute Shader escribe los colores/estados.
+	public Rid GetColorTextureRid()
+	{
+		if (!_colorTextureRid.IsValid)
+		{
+			GD.PrintErr("[AgentSystem] Advertencia: Se intentó obtener ColorTextureRid antes de inicializar.");
+		}
+		return _colorTextureRid;
 	}
 
 }

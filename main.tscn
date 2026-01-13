@@ -1,14 +1,16 @@
-[gd_scene load_steps=14 format=3 uid="uid://bbr5o4fhtiijr"]
+[gd_scene load_steps=19 format=3 uid="uid://bbr5o4fhtiijr"]
 
 [ext_resource type="Script" uid="uid://cj0wls38ooum3" path="res://Scripts/Main.cs" id="1_4c57u"]
 [ext_resource type="Script" uid="uid://cfigf47cpsynr" path="res://Scripts/World/PlanetRender.cs" id="1_lquwl"]
-[ext_resource type="RDShaderFile" uid="uid://xnuj6qgxnse5" path="res://Shaders/Compute/simulation_sphere.glsl" id="2_1bvp3"]
 [ext_resource type="RDShaderFile" uid="uid://dw1nnja5i2vvf" path="res://Shaders/Compute/poi_painter.glsl" id="2_efxa6"]
 [ext_resource type="Script" uid="uid://7k5lvwfwfhde" path="res://Scripts/Cameras/OrbitalCamera.cs" id="3_lquwl"]
 [ext_resource type="Script" uid="uid://1pjncvuov0ns" path="res://Scripts/Agents/AgentSystem.cs" id="4_272bh"]
 [ext_resource type="Script" uid="uid://bfrnup5h00og2" path="res://Scripts/World/PlanetBaker.cs" id="5_5vw27"]
 [ext_resource type="RDShaderFile" uid="uid://c3nhofkxnuwaa" path="res://Shaders/Compute/planet_baker.glsl" id="6_7mycd"]
 [ext_resource type="Script" uid="uid://qpiji7gd2eyk" path="res://Scripts/UI/SimulationUI.cs" id="6_kek77"]
+[ext_resource type="RDShaderFile" uid="uid://di8qw4wqxoq54" path="res://Shaders/Compute/agent_compute.glsl" id="7_dg77c"]
+[ext_resource type="Script" uid="uid://7djt2o8xmpsw" path="res://Scripts/Agents/AgentRender.cs" id="8_dg77c"]
+[ext_resource type="Shader" uid="uid://dx3sist5qud21" path="res://Shaders/Visual/agent_render.gdshader" id="8_ycdy4"]
 [ext_resource type="Script" uid="uid://bonirufu680qn" path="res://Scripts/World/EnvironmentManager.cs" id="9_kek77"]
 [ext_resource type="PackedScene" uid="uid://dtj8mcnxoandt" path="res://PoiVisual.tscn" id="10_4c57u"]
 
@@ -20,11 +22,27 @@ height = 200.0
 radius = 100.0
 height = 200.0
 
-[node name="Main" type="Node3D" node_paths=PackedStringArray("Baker", "AgentSys", "PlanetRender", "UI", "Environment")]
+[sub_resource type="ShaderMaterial" id="ShaderMaterial_w48qg"]
+render_priority = 0
+shader = ExtResource("8_ycdy4")
+shader_parameter/tex_width = 2048
+shader_parameter/agent_radius_visual = 2.0
+
+[sub_resource type="QuadMesh" id="QuadMesh_dg77c"]
+size = Vector2(10, 10)
+
+[sub_resource type="MultiMesh" id="MultiMesh_ycdy4"]
+custom_aabb = AABB(1, 1, 1, 1, 1, 1)
+instance_count = 10
+mesh = SubResource("QuadMesh_dg77c")
+buffer = PackedFloat32Array(0, 0, 0.14699998, 0.16799998, 0.203, 1, 0, 0, 0, 0, 0.14699998, 0.16799998, 0.203, 1, 0, 0, 1164, 0, 0.14699998, 0.16799998, 0.203, 1, 1, 0, 1164, 0, 0.14699998, 0.16799998, 0.203, 1, 1, 0, 1164, 660, 0.14699998, 0.16799998, 0.203, 1, 1, 1, 1164, 660, 0.14699998, 0.16799998, 0.203, 1, 1, 1, 0, 660, 0.14699998, 0.16799998, 0.203, 1, 0, 1, 0, 660, 0.14699998, 0.16799998, 0.203, 1, 0, 1, 1.8e-44, 1.7e-44, 4e-45, 1.5e-44, 6e-45, 4e-45, 1.7e-44, 1.5e-44, 6e-45, 1.4e-44, 7e-45, 6e-45, 1.5e-44, 1.4e-44, 7e-45, 1.3e-44)
+
+[node name="Main" type="Node3D" node_paths=PackedStringArray("PlanetRender", "Baker", "AgentCompute", "agentRender", "UI", "Environment")]
 script = ExtResource("1_4c57u")
+PlanetRender = NodePath("PlanetSystem")
 Baker = NodePath("PlanetBaker")
-AgentSys = NodePath("AgentSystem")
-PlanetRender = NodePath("WorldRenderer")
+AgentCompute = NodePath("AgentSystem")
+agentRender = NodePath("AgentRender")
 UI = NodePath("CanvasLayer")
 Environment = NodePath("EnvironmentManager")
 PoiPainterShader = ExtResource("2_efxa6")
@@ -40,23 +58,26 @@ transform = Transform3D(0.7071068, 0.5, -0.5, 0, 0.70710677, 0.70710677, 0.70710
 light_indirect_energy = 0.5
 light_bake_mode = 1
 
-[node name="WorldRenderer" type="Node3D" parent="."]
+[node name="PlanetSystem" type="Node3D" parent="."]
 script = ExtResource("1_lquwl")
 
-[node name="PlanetMeshVisual" type="MeshInstance3D" parent="WorldRenderer"]
+[node name="PlanetMeshVisual" type="MeshInstance3D" parent="PlanetSystem"]
 visible = false
 mesh = SubResource("SphereMesh_dg77c")
-
-[node name="AgentSystem" type="Node3D" parent="."]
-script = ExtResource("4_272bh")
-ComputeShaderFile = ExtResource("2_1bvp3")
-
-[node name="AgentVisualizer" type="MultiMeshInstance3D" parent="AgentSystem"]
-visible = false
 
 [node name="PlanetBaker" type="Node" parent="."]
 script = ExtResource("5_5vw27")
 BakerShaderFile = ExtResource("6_7mycd")
+
+[node name="AgentSystem" type="Node3D" parent="."]
+script = ExtResource("4_272bh")
+ComputeShaderFile = ExtResource("7_dg77c")
+
+[node name="AgentRender" type="MultiMeshInstance3D" parent="."]
+material_override = SubResource("ShaderMaterial_w48qg")
+custom_aabb = AABB(10, 10, 10, 10, 10, 10)
+multimesh = SubResource("MultiMesh_ycdy4")
+script = ExtResource("8_dg77c")
 
 [node name="CanvasLayer" type="CanvasLayer" parent="."]
 script = ExtResource("6_kek77")

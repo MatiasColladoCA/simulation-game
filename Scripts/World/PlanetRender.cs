@@ -138,9 +138,9 @@ public partial class PlanetRender : Node3D
 		if (_waterMesh != null && _waterMesh.Mesh is SphereMesh sphere)
 		{
 			// El radio de la esfera de agua es simplemente la altura absoluta del nivel del mar.
-			float waterSphereRadius = (_currentRadius * 0.5f) + waterLevelAbsolute;
-			sphere.Radius = waterSphereRadius;
-			sphere.Height = waterSphereRadius * 2.0f;
+			// float waterSphereRadius = (_currentRadius * 0.5f) + waterLevelAbsolute;
+			sphere.Radius = waterLevelAbsolute;
+			sphere.Height = waterLevelAbsolute * 2.0f;
 		}
 	}
 
@@ -269,32 +269,6 @@ public partial class PlanetRender : Node3D
 	}
 
 
-
-
-	// private void UpdateWaterVisuals(bool force)
-	// {
-	// 	_lastWaterLevel = WaterLevel;
-	// 	if (_planetMaterial != null) _planetMaterial.SetShaderParameter("water_level_norm", WaterLevel);
-
-	// 	float r = _currentRadius + (_currentNoiseHeight * WaterLevel);
-		
-	// 	if (_waterMesh == null) {
-	// 		_waterMesh = new MeshInstance3D { Name = "WaterSphere" };
-	// 		AddChild(_waterMesh);
-	// 		var mat = new StandardMaterial3D();
-	// 		mat.Transparency = BaseMaterial3D.TransparencyEnum.Alpha;
-	// 		mat.AlbedoColor = new Color(0.0f, 0.2f, 0.8f, 0.6f);
-	// 		mat.Roughness = 0.1f; mat.Metallic = 0.5f;
-	// 		mat.EmissionEnabled = true; mat.Emission = new Color(0.0f, 0.1f, 0.3f);
-	// 		mat.EmissionEnergyMultiplier = 0.5f;
-	// 		_waterMesh.MaterialOverride = mat;
-	// 		_waterMesh.Mesh = new SphereMesh();
-	// 	}
-
-	// 	if (_waterMesh.Mesh is SphereMesh s) {
-	// 		s.Radius = r; s.Height = r * 2;
-	// 	}
-	// }
 
 
 	// Añadir dentro de PlanetRender.cs

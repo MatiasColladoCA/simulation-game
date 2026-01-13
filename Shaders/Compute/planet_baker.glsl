@@ -6,7 +6,7 @@ layout(local_size_x = 8, local_size_y = 8, local_size_z = 1) in;
 // BINDINGS (Tus bindings originales intactos)
 layout(set = 0, binding = 0, r32f) writeonly uniform imageCube height_map;
 layout(set = 0, binding = 1, rgba16f) writeonly uniform imageCube vector_field;
-
+layout(set = 0, binding = 2, rgba16f) writeonly uniform imageCube normal_map;
 layout(set = 0, binding = 3, std430) restrict buffer StatsBuffer { 
     int min_h_fixed; 
     int max_h_fixed; 

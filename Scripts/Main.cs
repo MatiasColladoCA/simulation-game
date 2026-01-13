@@ -6,9 +6,13 @@ using System.Runtime.InteropServices;
 public partial class Main : Node
 {
 	// --- DEPENDENCIAS DE ESCENA ---
-	[Export] public PlanetBaker Baker;
-	[Export] public AgentSystem AgentSys;
 	[Export] public PlanetRender PlanetRender;
+	[Export] public PlanetBaker Baker;
+
+	[Export] public AgentSystem AgentCompute;
+
+	[Export] public AgentRender agentRender;
+	
 	[Export] public SimulationUI UI;
 	[Export] public EnvironmentManager Environment;
 	[Export] public RDShaderFile PoiPainterShader;
@@ -65,7 +69,7 @@ public partial class Main : Node
 	{
 		_rd = RenderingServer.GetRenderingDevice();
 		
-		if (Baker == null || AgentSys == null || PlanetRender == null || UI == null || Environment == null || PoiPainterShader == null)
+		if (Baker == null || AgentCompute == null || PlanetRender == null || UI == null || Environment == null || PoiPainterShader == null)
 		{
 			GD.PrintErr("[SimController] Faltan dependencias en el Inspector.");
 			return;
@@ -250,14 +254,32 @@ public partial class Main : Node
 			 Environment.SetInfluenceTexture(influenceTex);
 		}
 
+		PlanetRender.Initialize(
+			bakeResult.HeightMapRid,   // Rid
+			bakeResult.VectorFieldRid, // Rid
+			bakeResult.NormalMapRid,   // Rid
+			_currentConfig.Radius,     // float
+			bakeResult.MinHeight,      // float (Calculado por GPU)
+			bakeResult.MaxHeight      // float (Calculado por GPU)
+			// renderData                 // Struct Visual		);
+
+
+		);
 		// ---------------------------------------------------------
 		// 7. INICIALIZAR AGENTES Y RENDERER
 		// ---------------------------------------------------------
-		AgentSys.Initialize(
+
+		AgentCompute.Initialize(
 			_rd,
 			Environment,
 			_currentConfig); 
 
+		// 2. Inicializar Render (Visual)
+		// Extraemos los RIDs que generó el sistema de agentes
+		var posRid = AgentCompute.GetPosTextureRid(); // Necesitas exponer esto en AgentSystem
+		var colRid = AgentCompute.GetColorTextureRid(); // Y esto
+
+		agentRender.Initialize(posRid, colRid, AgentCompute.AgentCount);
 		// Pintar Influencia Inicial
 		// NOTA: Asegúrate de que Baker exponga su ParamsBuffer si lo necesitamos aquí, 
 		// o usa el _paramsBuffer local si es el mismo binding.
@@ -267,16 +289,7 @@ public partial class Main : Node
 
 
 
-
-		PlanetRender.Initialize(
-			bakeResult.HeightMapRid,   // Rid
-			bakeResult.VectorFieldRid, // Rid
-			bakeResult.NormalMapRid,   // Rid
-			_currentConfig.Radius,     // float
-			bakeResult.MinHeight,      // float (Calculado por GPU)
-			bakeResult.MaxHeight      // float (Calculado por GPU)
-			// renderData                 // Struct Visual		);
-		);
+		
 
 		
 
@@ -294,10 +307,10 @@ public partial class Main : Node
 		if (!_isRunning) return;
 		
 		double time = Time.GetTicksMsec() / 1000.0;
-		AgentSys.UpdateSimulation(delta, time);
+		AgentCompute.UpdateSimulation(delta, time);
 
 		// Asumo que UI maneja sus inputs internamente, o agregamos lógica aquí
-		UI.UpdateStats(delta, (int)AgentSys.ActiveAgentCount);
+		UI.UpdateStats(delta, (int)AgentCompute.ActiveAgentCount);
 	}
 
 	// --- MÉTODOS DE COMUNICACIÓN CON GPU ---
@@ -458,10 +471,10 @@ public partial class Main : Node
 				Vector3 hitPoint = rayOrigin + (rayDir * t);
 				
 				// Inyectar en el sistema de agentes
-				AgentSys.SpawnAgent(hitPoint, _nextSpawnIndex);
+				AgentCompute.SpawnAgent(hitPoint, _nextSpawnIndex);
 				
 				// Ciclar índice para no sobreescribir siempre el mismo
-				_nextSpawnIndex = (_nextSpawnIndex + 1) % AgentSys.AgentCount;
+				_nextSpawnIndex = (_nextSpawnIndex + 1) % AgentCompute.AgentCount;
 				
 				GD.Print($"Agent Spawned at: {hitPoint} (Index: {_nextSpawnIndex})");
 			}
@@ -486,7 +499,7 @@ public partial class Main : Node
 			if (int.TryParse(args[1], out int count))
 			{
 				// Ejecución en el sistema de agentes
-				AgentSys.SpawnRandomAgents(count);
+				AgentCompute.SpawnRandomAgents(count);
 				GD.Print($"[Console] Ejecutando spawn masivo: {count} agentes.");
 			}
 			else
