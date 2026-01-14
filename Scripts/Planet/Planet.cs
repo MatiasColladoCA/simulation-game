@@ -1,0 +1,283 @@
+
+
+
+using Godot;
+using System;
+
+public partial class Planet : Node3D
+{
+	// --- ESTADO DEL MUNDO ---
+	private PlanetParamsData _params;
+	private RenderingDevice _rd;
+	
+	// RIDs que el planeta "posee" y expone al exterior
+	private Rid _heightMapRid;
+	private Rid _normalMapRid;
+
+	private Rid _vectorFieldRid;
+	// Cache de límites físicos para colisiones/gameplay
+	private float _minHeightCache;
+	private float _maxHeightCache;
+
+	// --- WORKERS (Subsistemas) ---
+	private PlanetBaker _terrainBaker; 
+	private PoiSystem _poiSystem; 
+
+	// --- REFERENCIAS DE EDITOR ---
+	[ExportGroup("Componentes Visuales")]
+	// [Export] public Node3D TerrainVisualRoot; 
+	[Export] public Node3D PoiContainer; // Nodo vacío hijo donde se instanciarán los POIs
+	
+	[ExportGroup("Recursos & Assets")]
+	[Export] public RDShaderFile BakerShader; 
+	[Export] public PackedScene PoiVisualScene;
+
+	[Export] public PlanetRender Renderer;
+	[Export] public ShaderMaterial _planetMaterial;
+
+	// --- PROPIEDADES PÚBLICAS (API) ---
+	public float Radius => _params.Radius;
+
+	// Getters para Main/Agentes: El Planeta actúa como puente hacia sus sistemas internos
+	public PlanetParamsData GetParams() => _params;
+	public Rid GetHeightMapRid() => _heightMapRid;
+	public Rid GetVectorFieldRid() => _vectorFieldRid;
+	
+	// Aquí delegamos la consulta al PoiSystem. Si no está listo, devolvemos vacío.
+	public Rid GetInfluenceTextureRid() => _poiSystem?.GetInfluenceTexture() ?? new Rid();
+	public Rid GetPoiBufferRid() => _poiSystem?.GetPoiBuffer() ?? new Rid();
+
+	public override void _Ready()
+	{
+		// Instanciación del Baker (Obrero temporal)
+		_terrainBaker = new PlanetBaker();
+		_terrainBaker.Name = "Internal_Baker";
+		AddChild(_terrainBaker);
+	}
+
+	// --- PUNTO DE ENTRADA ---
+	public bool Initialize(RenderingDevice rd, PlanetParamsData config, PoiPainter sharedPainter)
+	{
+		_rd = rd;
+		
+		// 1. VALIDACIÓN
+		_params = ValidateConfig(config);
+
+		// 2. GENERACIÓN DEL TERRENO (BAKE)
+		// Configuramos al obrero
+		_terrainBaker.BakerShaderFile = this.BakerShader;
+		_terrainBaker.SetParams(_params);
+		
+		// ¡A trabajar!
+		var bakeResult = _terrainBaker.Bake(_rd);
+
+		if (!bakeResult.Success)
+		{
+			GD.PrintErr($"[Planet] Falló la generación del terreno.");
+			return false;
+		}
+		else
+		{
+			GD.Print($"[Planet] Generación del terreno exitosa.");
+		}
+
+		// 3. CAPTURA DE RESULTADOS
+		// El planeta toma posesión de las texturas generadas
+		_heightMapRid = bakeResult.HeightMapRid;
+		_normalMapRid = bakeResult.NormalMapRid;
+		_vectorFieldRid = bakeResult.VectorFieldRid;
+
+		_minHeightCache = bakeResult.MinHeight;
+		_maxHeightCache = bakeResult.MaxHeight;
+
+		// // 4. ACTUALIZAR VISUALES (Shader de Superficie)
+		// UpdateTerrainVisuals();
+		if (_planetMaterial == null)
+		{
+			// _planetMaterial = new ShaderMaterial();
+			// _planetMaterial.Shader = GD.Load<Shader>("res://Shaders/Visual/planet_terrain.gdshader");
+			GD.PrintErr("[Planet] Falta terrain material");
+
+		}else
+		{
+			GD.Print("[planet] El material se está asignando.");
+
+			Renderer._planetMaterial = _planetMaterial;
+		}
+
+		if (Renderer != null)
+		{
+			Renderer.Initialize(
+				_heightMapRid,
+				_vectorFieldRid,
+				_normalMapRid,
+				_params.Radius,
+				_minHeightCache,
+				_maxHeightCache
+			);
+		}
+		else
+		{
+			GD.PrintErr("[Planet] Falta asignar el nodo 'Renderer' en el Inspector.");
+		}
+
+		// 5. GENERAR POIS
+		// Aquí ocurre la magia de la delegación.
+		// No creamos buffers aquí. Solo damos la orden.
+		// InitializePois(sharedPainter);
+
+		return true;
+	}
+
+	// --- MÉTODOS PRIVADOS ---
+
+
+	private void UpdateVisuals()
+	{
+		if (Renderer == null)
+		{
+			GD.PrintErr("[Planet] No se asignó PlanetRender.");
+			return;
+		}
+
+		// Delegamos la complejidad visual al componente especializado
+		Renderer.Initialize(
+			_heightMapRid,
+			_vectorFieldRid, // Asegúrate de tener este RID
+			_normalMapRid,
+			_params.Radius,
+			_minHeightCache,
+			_maxHeightCache
+		);
+		
+		// Si tienes biomas
+		// Renderer.ApplyBiomeData(_currentBiome);
+	}
+
+	private void InitializePois(PoiPainter painter)
+	{
+		// Lazy Init
+		if (_poiSystem == null) 
+			_poiSystem = new PoiSystem(_rd, painter, PoiVisualScene);
+
+		// ORDEN: "PoiSystem, genera puntos en MI superficie (PoiContainer) usando MIS datos (_params)"
+		// PoiSystem se encarga de crear su propio Buffer y Textura internamente.
+		_poiSystem.GeneratePois(_params, PoiContainer ?? this);
+	}
+
+	
+
+	// private void UpdateTerrainVisuals()
+	// {
+	// 	if (TerrainVisualRoot == null) return;
+		
+	// 	// Obtener MeshInstance de forma segura
+	// 	var meshInstance = TerrainVisualRoot as MeshInstance3D ?? TerrainVisualRoot.GetChildOrNull<MeshInstance3D>(0);
+		
+	// 	if (meshInstance == null)
+	// 	{
+	// 		GD.PrintErr("[Planet] No se encontró MeshInstance3D para aplicar texturas.");
+	// 		return;
+	// 	}
+
+	// 	var mat = meshInstance.MaterialOverride as ShaderMaterial;
+	// 	if (mat == null) mat = meshInstance.Mesh?.SurfaceGetMaterial(0) as ShaderMaterial;
+
+	// 	if (mat != null)
+	// 	{
+	// 		// Pasamos las texturas vivas al material
+	// 		mat.SetShaderParameter("height_map", TextureFromRid(_heightMapRid));
+	// 		mat.SetShaderParameter("normal_map", TextureFromRid(_normalMapRid));
+	// 		mat.SetShaderParameter("min_height", _minHeightCache);
+	// 		mat.SetShaderParameter("max_height", _maxHeightCache);
+	// 		mat.SetShaderParameter("radius", _params.Radius);
+	// 	}
+	// }
+
+
+
+
+	private PlanetParamsData ValidateConfig(PlanetParamsData c)
+	{
+		c.WarpStrength = Mathf.Max(0.001f, c.WarpStrength);
+		c.DetailFrequency = Mathf.Max(0.001f, c.DetailFrequency);
+		// ... otras validaciones ...
+		return c;
+	}
+
+	// --- HELPERS ---
+
+	private Texture TextureFromRid(Rid rid)
+	{
+		// Helper para Godot 4.2+
+		var tex = new TextureCubemapRD();
+		tex.TextureRdRid = rid;
+		return tex;
+	}
+
+
+	public bool RaycastHit(Vector3 globalOrigin, Vector3 globalDir, out Vector3 hitPoint)
+	{
+		hitPoint = Vector3.Zero;
+
+		// 1. Convertir Rayo a Espacio Local
+		// Esto permite que el planeta esté rotado o trasladado y el raycast siga funcionando.
+		Vector3 localOrigin = ToLocal(globalOrigin);
+		
+		// Convertimos la dirección rotándola con la inversa del transform del planeta
+		Vector3 localDir = (ToLocal(globalOrigin + globalDir) - localOrigin).Normalized();
+
+		// 2. Intersección Analítica Rayo-Esfera (Bound Sphere Check)
+		// Usamos el Radio Base como aproximación inicial.
+		// Ecuación: ||O + tD||^2 = R^2  ->  t^2 + 2(O.D)t + (O.O - R^2) = 0
+		float r = _params.Radius;
+		
+		float b = localOrigin.Dot(localDir);
+		float c = localOrigin.Dot(localOrigin) - (r * r);
+		float discriminant = (b * b) - c;
+
+		// Si es negativo, el rayo pasó de largo
+		if (discriminant < 0.0f) return false;
+
+		// 3. Resolver distancia (t)
+		// Usamos la resta (-sqrt) para obtener el punto de impacto más cercano a la cámara
+		float t = -b - Mathf.Sqrt(discriminant);
+
+		// Si t > 0, colisionamos frente a la cámara
+		if (t > 0.0f)
+		{
+			// Punto de impacto en la esfera perfecta (Radio Base)
+			Vector3 sphereHit = localOrigin + (localDir * t);
+			
+			// 4. REFINAMIENTO AAA (Height Correction)
+			// Ahora consultamos al ruido: "¿Qué altura real tiene el terreno aquí?"
+			Vector3 dirFromCenter = sphereHit.Normalized();
+			
+			// Usamos la misma matemática que el Baker para obtener la altura exacta
+			float terrainHeight = TerrainNoise.GetTerrainHeight(dirFromCenter, _params);
+			
+			// Recalculamos la posición exacta sobre la superficie
+			Vector3 terrainHit = dirFromCenter * (_params.Radius + terrainHeight);
+
+			// 5. Convertir a Global y retornar
+			hitPoint = ToGlobal(terrainHit);
+			return true;
+		}
+
+		return false;
+	}
+
+
+	public override void _ExitTree()
+	{
+		// Limpieza ordenada
+		_poiSystem?.Dispose();
+		
+		// Liberamos las texturas del terreno que poseemos
+		if (_heightMapRid.IsValid) _rd?.FreeRid(_heightMapRid);
+		if (_normalMapRid.IsValid) _rd?.FreeRid(_normalMapRid);
+		if (_vectorFieldRid.IsValid) _rd?.FreeRid(_vectorFieldRid);
+		
+		base._ExitTree();
+	}
+}

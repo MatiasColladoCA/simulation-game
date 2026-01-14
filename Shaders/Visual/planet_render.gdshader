@@ -78,8 +78,8 @@ void fragment() {
     }
 
     // Mezcla suave para ocultar seams del cubemap
-    vec3 n_final = n_geo;
-    
+    vec3 n_final = normalize(mix(n_geo, n_baked, 0.95));
+
     // Transformar al espacio vista
     NORMAL = mat3(VIEW_MATRIX) * n_geo;
 

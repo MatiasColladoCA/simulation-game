@@ -18,7 +18,7 @@ public struct PlanetParamsData
 
 	// --- vec4 global_offset (16 bytes) ---
 	public Vector3 NoiseOffset;     // global_offset.xyz
-	public float _padding3;         // global_offset.w (necesario para alinear)
+	public float PlanetSeed;         // global_offset.w (necesario para alinear)
 
 	// --- vec4 detail_params (16 bytes) ---
 	public float DetailFrequency;   // detail_params.x
@@ -39,4 +39,23 @@ public struct PlanetParamsData
 	public float _padding7;         // pad_uv.y
 	public float _padding8;         // pad_uv.z
 	public float _padding9;         // pad_uv.w
+
+
+	public override string ToString()
+	{
+		return $"PlanetParamsData:\n" +
+			$"-- Noise Settings --\n" +
+			$"NoiseScale: {NoiseScale}, NoiseHeight: {NoiseHeight}, WarpStrength: {WarpStrength}, MountainRoughness: {MountainRoughness}\n" +
+			$"-- Curve Params --\n" +
+			$"OceanFloorLevel: {OceanFloorLevel}, WeightMultiplier: {WeightMultiplier}, GroundDetailFreq: {GroundDetailFreq}, _padding2: {_padding2}\n" +
+			$"-- Global Offset --\n" +
+			$"NoiseOffset: {NoiseOffset}, PlanetSeed: {PlanetSeed}\n" +
+			$"-- Detail Params --\n" +
+			$"DetailFrequency: {DetailFrequency}, RidgeSharpness: {RidgeSharpness}, MaskStart: {MaskStart}, MaskEnd: {MaskEnd}\n" +
+			$"-- Res Offset --\n" +
+			$"ResolutionF: {ResolutionF}, Radius: {Radius}, _padding4: {_padding4}, _padding5: {_padding5}\n" +
+			$"-- Pad UV --\n" +
+			$"_padding6: {_padding6}, _padding7: {_padding7}, _padding8: {_padding8}, _padding9: {_padding9}";
+	}
+
 }

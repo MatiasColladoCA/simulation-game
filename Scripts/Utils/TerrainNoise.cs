@@ -154,50 +154,191 @@ public static class TerrainNoise
 		);
 	}
 
-	// --- FRACTALES ---
+	// // --- FRACTALES ---
 
-	private static float FbmSoft(Vector3 x, int octaves)
+	// private static float FbmSoft(Vector3 x, int octaves)
+	// {
+	// 	float v = 0.0f; float a = 0.5f; Vector3 shift = Vec3(100.0f);
+	// 	float freq = 1.0f;
+	// 	for (int i = 0; i < octaves; ++i) {
+	// 		v += a * Snoise(x * freq);
+	// 		x += shift; a *= 0.5f; freq *= 2.0f;
+	// 	}
+	// 	return v;
+	// }
+
+	// private static float RidgedNoise(Vector3 x, int octaves)
+	// {
+	// 	float v = 0.0f; float a = 1.0f; float freq = 1.0f; float prev_n = 1.0f;
+	// 	for (int i = 0; i < octaves; ++i) {
+	// 		float n = Snoise(x * freq);
+	// 		n = 1.0f - Mathf.Abs(n);
+	// 		n *= n;
+	// 		v += n * a * prev_n;
+	// 		prev_n = n; a *= 0.5f; freq *= 2.0f;
+	// 	}
+	// 	return v;
+	// }
+
+	// private static Vector3 Warp(Vector3 p)
+	// {
+	// 	float q = FbmSoft(p * 0.5f, 2);
+	// 	float displacement = q * 0.3f;
+	// 	return p + Vec3(displacement);
+	// }
+
+	// // --- API PÚBLICA ---
+	// public static float GetTerrainAAA(Vector3 dir, PlanetParamsData p)
+	// {
+	// 	Vector3 scaledP = dir.Normalized() * p.NoiseScale;
+	// 	Vector3 warpedP = Warp(scaledP);
+
+	// 	float continental = FbmSoft(warpedP * 0.5f, 3);
+	// 	float mountains = RidgedNoise(warpedP * 1.5f, 4);
+	// 	float mountainMask = Mathf.SmoothStep(0.0f, 0.4f, continental);
+
+	// 	float h = continental + (mountains * mountainMask * 0.6f);
+	// 	return p.Radius + (h * p.NoiseHeight);
+	// }
+
+
+
+// ---------------------------------------------------------
+	// REEMPLAZO 1: FBM SIMPLE (Coincide con simple_fbm del shader)
+	// ---------------------------------------------------------
+	// Líneas reemplazadas: FbmSoft anterior
+	private static float SimpleFbm(Vector3 x, int octaves, float persistence, float lacunarity)
 	{
-		float v = 0.0f; float a = 0.5f; Vector3 shift = Vec3(100.0f);
-		float freq = 1.0f;
-		for (int i = 0; i < octaves; ++i) {
-			v += a * Snoise(x * freq);
-			x += shift; a *= 0.5f; freq *= 2.0f;
+		float v = 0.0f;
+		float a = 1.0f;
+		float f = 1.0f;
+		float max_amp = 0.0f;
+
+		for (int i = 0; i < octaves; ++i)
+		{
+			v += Snoise(x * f) * a;
+			max_amp += a;
+			a *= persistence;
+			f *= lacunarity;
+			// OFFSET ADITIVO CLAVE DEL SHADER
+			x += new Vector3(1.23f, 4.56f, 7.89f); 
 		}
-		return v;
+		return v / max_amp;
 	}
 
-	private static float RidgedNoise(Vector3 x, int octaves)
+
+// ---------------------------------------------------------
+	// REEMPLAZO 2: RIDGED NOISE (Coincide con ridge_fbm del shader)
+	// ---------------------------------------------------------
+	// Líneas reemplazadas: RidgedNoise anterior
+	private static float RidgeFbm(Vector3 x, int octaves, float persistence, float lacunarity, float sharpness)
 	{
-		float v = 0.0f; float a = 1.0f; float freq = 1.0f; float prev_n = 1.0f;
-		for (int i = 0; i < octaves; ++i) {
-			float n = Snoise(x * freq);
-			n = 1.0f - Mathf.Abs(n);
-			n *= n;
-			v += n * a * prev_n;
-			prev_n = n; a *= 0.5f; freq *= 2.0f;
+		float v = 0.0f;
+		float a = 1.0f;
+		float f = 1.0f;
+		float max_amp = 0.0f;
+
+		for (int i = 0; i < octaves; ++i)
+		{
+			float n = 1.0f - Mathf.Abs(Snoise(x * f));
+			n = Mathf.Clamp(n, 0.0f, 1.0f);
+			n = n * n * n; // Cubico fijo como en el shader
+			
+			v += n * a;
+			max_amp += a;
+			a *= persistence;
+			f *= lacunarity;
+			
+			// OFFSET MULTIPLICATIVO + ADITIVO CLAVE DEL SHADER
+			x = x * lacunarity + new Vector3(9.87f, 6.54f, 3.21f);
 		}
-		return v;
+		return v / max_amp;
 	}
 
-	private static Vector3 Warp(Vector3 p)
+	// ---------------------------------------------------------
+	// REEMPLAZO 3: LOGICA PRINCIPAL (Coincide con get_terrain_height)
+	// ---------------------------------------------------------
+	// Líneas reemplazadas: GetTerrainAAA anterior
+	public static float GetTerrainHeight(Vector3 dir, PlanetParamsData p)
 	{
-		float q = FbmSoft(p * 0.5f, 2);
-		float displacement = q * 0.3f;
-		return p + Vec3(displacement);
-	}
+		// 1. Configuración de coordenadas
+		Vector3 pos = dir + p.NoiseOffset;
+		float scale = p.NoiseScale;
+		float warp_str = p.WarpStrength;
 
-	// --- API PÚBLICA ---
-	public static float GetTerrainAAA(Vector3 dir, PlanetParamsData p)
-	{
-		Vector3 scaledP = dir.Normalized() * p.NoiseScale;
-		Vector3 warpedP = Warp(scaledP);
+		// 2. DOMAIN WARPING (Réplica exacta del shader)
+		// vec3(snoise(pos... ), snoise(pos... + 5.2), snoise(pos... + 1.3))
+		float w1 = Snoise(pos * scale * 0.5f);
+		float w2 = Snoise(pos * scale * 0.5f + new Vector3(5.2f,5.2f , 5.2f)); // 5.2 en todos los ejes
+		float w3 = Snoise(pos * scale * 0.5f + new Vector3(1.3f, 1.3f, 1.3f)); // 1.3 en todos los ejes
+		
+		Vector3 warp_noise = new Vector3(w1, w2, w3);
+		Vector3 point = pos + warp_noise * warp_str;
 
-		float continental = FbmSoft(warpedP * 0.5f, 3);
-		float mountains = RidgedNoise(warpedP * 1.5f, 4);
-		float mountainMask = Mathf.SmoothStep(0.0f, 0.4f, continental);
+		// 3. CAPAS DE RUIDO INDEPENDIENTES
+		float d_freq = p.DetailFrequency;
 
-		float h = continental + (mountains * mountainMask * 0.6f);
-		return p.Radius + (h * p.NoiseHeight);
+		// Base continental
+		float continent_shape = SimpleFbm(point * scale, 5, 0.5f, 2.0f);
+		float h = continent_shape;
+
+		// Densidad de montañas
+		float mountain_density = SimpleFbm((point + new Vector3(100.0f, 100.0f, 100.0f)) * scale * 1.5f, 3, 0.5f, 2.0f);
+
+		// Detalle de suelo
+		float ground_detail = SimpleFbm(point * scale * d_freq * 0.5f, 3, 0.5f, 2.0f) * 0.05f;
+
+		// 4. LÓGICA DE BIOMAS
+		float sea_level = p.OceanFloorLevel;
+
+		if (h > sea_level)
+		{
+			// --- TIERRA ---
+			
+			// Suavizar transición costa/tierra
+			float land_factor = Mathf.SmoothStep(sea_level, sea_level + 0.1f, h);
+
+			// Máscara de bioma
+			float mask_start = p.MaskStart;
+			float mask_end = p.MaskEnd;
+			float is_mountain = Mathf.SmoothStep(mask_start, mask_end, mountain_density);
+
+			// Generar terrenos
+			// Nota: El shader usa params.detail_params.y para sharpness en la firma, pero internamente usa n*n*n.
+			// Pasamos el valor por consistencia.
+			float ridges = RidgeFbm(point * scale * d_freq, 6, 0.5f, 2.0f, p.RidgeSharpness);
+			float ridges_sharp = ridges * ridges; // Afilado post-proceso del shader
+
+			float mtns = ridges_sharp * p.WeightMultiplier;
+			float plains = ground_detail * 2.0f;
+
+			// Mezclar biomas (Mix = Lerp)
+			float land_shape = Mathf.Lerp(plains, mtns, is_mountain);
+
+			// Aplicar a la base
+			h += land_shape * land_factor;
+		}
+		else
+		{
+			// --- MAR ---
+			h += ground_detail;
+		}
+
+		// 5. NORMALIZACIÓN Y SALIDA
+		// Normalizar a [0, 1] como hace el shader: return h * 0.5 + 0.5;
+		float h_norm = h * 0.5f + 0.5f;
+		
+		// Clamp final del shader
+		h_norm = Mathf.Clamp(h_norm, 0.0f, 1.0f);
+
+		// Multiplicación por amplitud final
+		float h_final = h_norm * p.NoiseHeight;
+
+		// Retornamos solo la altura (el desplazamiento desde la esfera unitaria)
+		// El llamador debe hacer: position = dir.Normalized() * (Radius + GetTerrainHeight(...))
+		// O si prefieres devolver el radio total directamente (como tu función anterior):
+		// return RadiusBase + h_final;
+		
+		return h_final; 
 	}
 }

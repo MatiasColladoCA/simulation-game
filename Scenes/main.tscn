@@ -2,7 +2,7 @@
 
 [ext_resource type="Script" uid="uid://o4dlu7q8yd5k" path="res://PlanetManager.cs" id="1_0xm2m"]
 [ext_resource type="RDShaderFile" uid="uid://xnuj6qgxnse5" path="res://simulation_sphere.glsl" id="2_1bvp3"]
-[ext_resource type="RDShaderFile" uid="uid://cghlwquisj12v" path="res://planet_compute.glsl" id="2_h2yge"]
+[ext_resource type="RDShaderFile" uid="uid://cghlwquisj12v" path="res://planet_baker.glsl" id="2_h2yge"]
 [ext_resource type="Script" uid="uid://bkuli5elx204a" path="res://AgentSimulationSphere.cs" id="3_h2yge"]
 [ext_resource type="Script" uid="uid://7k5lvwfwfhde" path="res://OrbitalCamera.cs" id="3_lquwl"]
 

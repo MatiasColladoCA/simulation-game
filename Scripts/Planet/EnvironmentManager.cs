@@ -27,11 +27,28 @@ public partial class EnvironmentManager : Node
 		VectorField = vectorField;
 		_config = config;
 		
-		SetupPOIBuffer();
-		CreateVisualPOIs();
+		// SetupPOIBuffer();
+		// CreateVisualPOIs();
 	}
 
-	private void SetupPOIBuffer()
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+	public void SetupPoiBuffer()
 	{
 		Random rnd = new Random();
 
@@ -84,7 +101,7 @@ public partial class EnvironmentManager : Node
 			// 1. CALCULO DE ALTURA
 			// Asegúrate de que _config tenga los mismos valores que usó el Baker.
 			// Si cambiaste valores en el Inspector sin reiniciar, esto fallará.
-			float finalRadius = TerrainNoise.GetTerrainAAA(direction, _config);
+			float finalRadius = TerrainNoise.GetTerrainHeight(direction, _config);
 
 			// 2. POSICIONAMIENTO
 			instance.GlobalPosition = direction * finalRadius;
@@ -109,23 +126,47 @@ public partial class EnvironmentManager : Node
 
 
 
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
 	public void ToggleVisuals(bool visible)
 	{
 		foreach (var v in _poiVisuals) v.Visible = visible;
 	}
 
-	public void UpdatePOIs(Vector4[] newPois)
-	{
-		_poisData = newPois;
+	// public void UpdatePOIs(Vector4[] newPois)
+	// {
+	// 	_poisData = newPois;
 		
-		// Asegurarse de que newPois venga con W normalizado desde el controlador
-		// O renormalizar aquí si fuera necesario. Asumimos que Main ya manda datos correctos.
+	// 	// Asegurarse de que newPois venga con W normalizado desde el controlador
+	// 	// O renormalizar aquí si fuera necesario. Asumimos que Main ya manda datos correctos.
 		
-		byte[] data = MemoryMarshal.AsBytes(_poisData.AsSpan()).ToArray();
-		_rd.BufferUpdate(POIBuffer, 0, (uint)data.Length, data);
+	// 	byte[] data = MemoryMarshal.AsBytes(_poisData.AsSpan()).ToArray();
+	// 	_rd.BufferUpdate(POIBuffer, 0, (uint)data.Length, data);
 		
-		CreateVisualPOIs();
-	}
+	// 	CreateVisualPOIs();
+	// }
 
 	public void SetInfluenceTexture(Rid influenceTex)
 	{

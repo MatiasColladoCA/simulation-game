@@ -9,7 +9,7 @@ public partial class PlanetRender : Node3D
 	// [Export(PropertyHint.Range, "0.0, 1.0")] public float WaterLevel = 0.45f; 
 
 	private Mesh _patchMesh; // Malla base reutilizable
-	private ShaderMaterial _planetMaterial;
+	public ShaderMaterial _planetMaterial;
 	private PlanetChunk[] _rootChunks; // Las 6 caras del cubo
 	private MeshInstance3D _waterMesh;
 
@@ -29,84 +29,91 @@ public partial class PlanetRender : Node3D
 
 	private float _maxHeight;
 
+	[Export] public Shader VisualShader; // Asigna planet_render.gdshader aquí
+
+ 
+
+ 	private double _lodUpdateTimer = 0.0;
+	private const double LOD_UPDATE_INTERVAL = 0.1f; // Actualizar cada 100ms
 
 
-	// --- REEMPLAZAR FIRMA Y ASIGNACIONES EN PlanetRender.cs ---
-	public void Initialize(
-		Rid heightMapRid, 
-		Rid vectorFieldRid, 
-		Rid normalMapRid, 
-		float radius, 
-		float minHeight, 
-		float maxHeight
-		// PlanetParamsData visualData // (Opcional) Colores, texturas de bioma
-	)
+	public override void _Process(double delta)
 	{
-		_currentRadius = radius;
-		_maxHeight = maxHeight;
+
+		GD.Print(_currentRadius);
+		
+		// 1. Acumular tiempo
+		_lodUpdateTimer += delta;
+		
+		// 2. Si no ha pasado el tiempo suficiente, no hacemos nada
+		if (_lodUpdateTimer < LOD_UPDATE_INTERVAL) return;
+
+		// 3. Resetear timer (restamos en lugar de poner a 0 para mantener precisión)
+		_lodUpdateTimer -= LOD_UPDATE_INTERVAL;
+
+		// --- LÓGICA DE ACTUALIZACIÓN ---
+		if (_rootChunks == null) return;
+
+		// Obtener cámara (Costoso, pero como lo hacemos 10 veces/seg es despreciable)
+		// Lo ideal AAA sería que 'Planet' le inyecte la cámara activa, pero esto funciona bien.
+		var cam = GetViewport().GetCamera3D();
+		if (cam == null) 
+		{
+			GD.PrintErr("[PlanetRender] SOCORRO: No encuentro ninguna cámara activa. No puedo calcular LOD.");
+			return;
+		}
+
+		Vector3 camPos = cam.GlobalPosition;
+		// GD.Print($"Camera position: {camPos}");
 
 
-		// 1. Configurar Material
+
+		// 4. Actualizar Chunks pasando la posición (Sin Statics)
+		foreach (var chunk in _rootChunks) 
+		{
+			// Pasamos camPos como argumento. 
+			// Esto permite que cada chunk calcule su distancia localmente sin variables globales.
+			chunk.Update(camPos);  
+		}
+	}
+
+	public void Initialize(Rid heightMap, Rid vectorField, Rid normalMap, float radius, float minH, float maxH)
+	{
+		// 1. MATERIAL
 		if (_planetMaterial == null)
 		{
 			_planetMaterial = new ShaderMaterial();
-			_planetMaterial.Shader = GD.Load<Shader>("res://Shaders/Visual/planet_render.gdshader");
+			_planetMaterial.Shader = VisualShader;
 		}
+
+		// 2. VINCULAR TEXTURAS VULKAN -> GODOT
+		// Usamos los nombres con el sufijo "_gpu" que tiene tu shader
+		_planetMaterial.SetShaderParameter("height_map_gpu", new TextureCubemapRD { TextureRdRid = heightMap });
+		_planetMaterial.SetShaderParameter("normal_map_gpu", new TextureCubemapRD { TextureRdRid = normalMap });
 		
-		// 2. TEXTURAS (GPU)
-		// Nota: TextureCubemapRD es vital para que Godot entienda RIDs de Vulkan
+		// Si tienes el vector field:
+		// _planetMaterial.SetShaderParameter("vector_field_gpu", new TextureCubemapRD { TextureRdRid = vectorField });
 
-		
-		// 2. VINCULAR TEXTURAS DE VULKAN (RD -> Godot)
-		// TextureCubemapRD actúa como puente para usar RIDs de Compute en Shaders visuales
-		var hTex = new TextureCubemapRD { TextureRdRid = heightMapRid };
-		var vTex = new TextureCubemapRD { TextureRdRid = vectorFieldRid };
-		var nTex = new TextureCubemapRD { TextureRdRid = normalMapRid };
-
-		_planetMaterial.SetShaderParameter("height_map_gpu", hTex);
-		_planetMaterial.SetShaderParameter("vector_field_gpu", vTex);
-		_planetMaterial.SetShaderParameter("normal_map_gpu", nTex);
-
-		// 3. PARÁMETROS FÍSICOS
+		// 3. CONSTANTES FÍSICAS
+		// Nombres corregidos para coincidir con el shader
 		_planetMaterial.SetShaderParameter("planet_radius", radius);
-		_planetMaterial.SetShaderParameter("min_height_absolute", minHeight);
-		_planetMaterial.SetShaderParameter("max_height_absolute", maxHeight);
+		_planetMaterial.SetShaderParameter("min_height_absolute", minH);
+		_planetMaterial.SetShaderParameter("max_height_absolute", maxH);
 
-
-		// 2. Generar Mesh Base (Una sola vez)
+		// ... (Resto del código de Chunks y Agua igual) ...
+		
+		// 4. INICIALIZAR SISTEMA DE CHUNKS (QUADTREE)
 		if (_patchMesh == null) GeneratePatchMesh();
-
-		InitializeWater();
-
-
-		// 4. Agua
-		// UpdateWaterVisuals(true);
-
-		// 5. ASIGNAR AL MESH
-		var meshInstance = GetNodeOrNull<MeshInstance3D>("PlanetMesh");
-		if (meshInstance == null)
-		{
-			// Si no existe, créalo o búscalo dinámicamente
-			meshInstance = new MeshInstance3D();
-			meshInstance.Name = "PlanetMesh";
-			AddChild(meshInstance);
-			// Aquí deberías generar tu QuadTree o CubeSphere mesh
-			// GeneratePatchMesh(); 
-		}
-		meshInstance.MaterialOverride = _planetMaterial;
-
-
-		// 3. Inicializar Sistema Quadtree
-		// InitializeQuadtree(radius);
 		InitializeQuadtree(radius);
 
+		// 5. AGUA
+		InitializeWater(radius + (minH + (maxH - minH) * 0.5f)); 
 	}
-
 
 	// --- AÑADIR estos dos nuevos métodos en PlanetRender.cs ---
 
 	// Crea la malla y el material del agua una sola vez.
-	private void InitializeWater()
+	private void InitializeWater(float radius)
 	{
 		// Crear el MeshInstance3D si no existe
 		if (_waterMesh == null)
@@ -133,14 +140,14 @@ public partial class PlanetRender : Node3D
 
 	// Actualiza el radio de la esfera del agua para que coincida con el nivel del mar.
 	// <param name="waterLevelAbsolute">La altura absoluta del nivel del mar en unidades del mundo.</param>
-	private void UpdateWaterRadius(float waterLevelAbsolute)
+	private void UpdateWaterRadius(float currentRadius)
 	{
 		if (_waterMesh != null && _waterMesh.Mesh is SphereMesh sphere)
 		{
 			// El radio de la esfera de agua es simplemente la altura absoluta del nivel del mar.
 			// float waterSphereRadius = (_currentRadius * 0.5f) + waterLevelAbsolute;
-			sphere.Radius = waterLevelAbsolute;
-			sphere.Height = waterLevelAbsolute * 2.0f;
+			sphere.Radius = currentRadius;
+			sphere.Height = currentRadius * 2.0f;
 		}
 	}
 
@@ -194,10 +201,12 @@ public partial class PlanetRender : Node3D
 		}
 
 		// Configurar estáticos de la clase Chunk
-		PlanetChunk.BaseMesh = _patchMesh;
-		PlanetChunk.ChunkMaterial = _planetMaterial;
 		PlanetChunk.Radius = radius;
 		PlanetChunk.RootNode = this;
+		PlanetChunk.BaseMesh = _patchMesh;
+		PlanetChunk.ChunkMaterial = _planetMaterial;
+		// PlanetChunk.Radius = radius;
+		// PlanetChunk.RootNode = this;
 
 		// Crear las 6 caras raíz
 		_rootChunks = new PlanetChunk[6];
@@ -207,25 +216,28 @@ public partial class PlanetRender : Node3D
 
 		for (int i = 0; i < 6; i++)
 		{
-			_rootChunks[i] = new PlanetChunk(null, dirs[i], axA[i], axB[i], 2.0f, 0);
+			// GD.Print("[PlanetRender]AAAAAAAAAA");
+			// GD.Print(radius);
+
+			_rootChunks[i] = new PlanetChunk(null, radius, dirs[i], axA[i], axB[i], 2.0f, 0);
 		}
 	}
 
+
+
+
 	// --- REEMPLAZAR el método _Process ---
-	public override void _Process(double delta)
-	{
-		// --- ACTUALIZACIÓN DE QUADTREE ---
-		if (_rootChunks == null) return;
+	// public override void _Process(double delta)
+	// {
+	// 	if (_rootChunks == null) return;
+		
+	// 	var cam = GetViewport().GetCamera3D();
+	// 	if (cam == null) return;
 
-		var cam = GetViewport().GetCamera3D();
-		if (cam == null) return;
-
-		PlanetChunk.CameraPos = cam.GlobalPosition;
-
-		foreach (var chunk in _rootChunks) chunk.Update();	
-	}
-
-
+	// 	// Actualizar LOD basado en cámara
+	// 	PlanetChunk.CameraPos = cam.GlobalPosition;
+	// 	foreach (var chunk in _rootChunks) chunk.Update();
+	// }
 	public void SetViewVectorField(bool visible)
 	{
 		_isViewVectorField = visible;
