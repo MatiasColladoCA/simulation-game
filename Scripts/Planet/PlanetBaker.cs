@@ -37,34 +37,6 @@ public partial class PlanetBaker : Node
 	public BakeResult Bake(RenderingDevice rd)
 	{
 
-		GD.Print("[Baker] --- Iniciando Proceso de Validación ---");
-
-		// 1. VALIDACIÓN DE DEPENDENCIAS
-		if (rd == null)
-		{
-			GD.PrintErr("[Baker] FATAL: RenderingDevice es nulo.");
-			return new BakeResult { Success = false };
-		}
-		if (BakerShaderFile == null)
-		{
-			GD.PrintErr("[Baker] FATAL: No se asignó el archivo .glsl en el inspector.");
-			return new BakeResult { Success = false };
-		}
-
-		// 2. VALIDACIÓN DE DATOS DE ENTRADA (PARAMS)
-		if (_cachedParams.ResolutionF < 8) 
-		{
-			GD.PrintErr($"[Baker] ERROR: Resolución absurda ({_cachedParams.ResolutionF}). Mínimo requerido: 32.");
-			return new BakeResult { Success = false };
-		}
-		if (_cachedParams.Radius <= 0)
-		{
-			GD.PrintErr($"[Baker] ERROR: Radio inválido ({_cachedParams.Radius}). El planeta debe tener volumen.");
-			return new BakeResult { Success = false };
-		}
-		
-		// Debug de lo que entra
-		GD.Print($"[Baker] Configuración recibida: Res={_cachedParams.ResolutionF}, Radio={_cachedParams.Radius}, RuidoScale={_cachedParams.NoiseScale}");
 
 		// TRUCO AAA: Crear un dispositivo local temporal para poder hacer Sync() sin errores
 		// Esto permite bloquear el hilo hasta que termine el cálculo.

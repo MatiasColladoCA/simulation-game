@@ -4,8 +4,8 @@
 [ext_resource type="Script" uid="uid://7k5lvwfwfhde" path="res://Scripts/Cameras/OrbitalCamera.cs" id="3_lquwl"]
 [ext_resource type="Script" uid="uid://1pjncvuov0ns" path="res://Scripts/Agents/AgentSystem.cs" id="4_272bh"]
 [ext_resource type="PackedScene" uid="uid://xqf0drumhvq8" path="res://Scenes/Prefabs/Planet.tscn" id="4_efxa6"]
+[ext_resource type="RDShaderFile" uid="uid://ca6tret02iis" path="res://Shaders/Compute/agent_simulation.glsl" id="5_4c57u"]
 [ext_resource type="Script" uid="uid://qpiji7gd2eyk" path="res://Scripts/UI/SimulationUI.cs" id="6_kek77"]
-[ext_resource type="RDShaderFile" uid="uid://di8qw4wqxoq54" path="res://Shaders/Compute/agent_compute.glsl" id="7_dg77c"]
 [ext_resource type="Script" uid="uid://7djt2o8xmpsw" path="res://Scripts/Agents/AgentRender.cs" id="8_dg77c"]
 [ext_resource type="Shader" uid="uid://dx3sist5qud21" path="res://Shaders/Visual/agent_render.gdshader" id="8_ycdy4"]
 [ext_resource type="Script" uid="uid://bonirufu680qn" path="res://Scripts/Planet/EnvironmentManager.cs" id="9_kek77"]
@@ -54,7 +54,7 @@ light_bake_mode = 1
 
 [node name="AgentSystem" type="Node3D" parent="."]
 script = ExtResource("4_272bh")
-ComputeShaderFile = ExtResource("7_dg77c")
+ComputeShaderFile = ExtResource("5_4c57u")
 
 [node name="AgentRender" type="MultiMeshInstance3D" parent="."]
 material_override = SubResource("ShaderMaterial_w48qg")

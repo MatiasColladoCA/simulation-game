@@ -105,56 +105,56 @@ public class PlanetChunk
 
 
         // 3. CÁLCULO DE LOD (Matemática Mejorada)
-    float distToCam = globalChunkPos.DistanceTo(CameraPos);
+        float distToCam = globalChunkPos.DistanceTo(CameraPos);
 
-    // Ajuste Angular (Foveated Rendering)
-    // Reduce la calidad en los bordes de la visión para ganar rendimiento
-    float angularFactor = Mathf.Clamp(dot, 0.0f, 1.0f);
-    angularFactor = Mathf.Pow(angularFactor, 3.0f); 
-    
-    // 'effectiveDist' engaña al sistema: si estás mirando de reojo, 
-    // le hace creer que estás más lejos para que baje la calidad.
-    float effectiveDist = distToCam / Mathf.Max(angularFactor, 0.1f);
-
-    // --- AQUÍ ESTÁ LA CLAVE DE LOS "3 NIVELES" ---
-    
-    // Convertimos el tamaño relativo (0.5, 0.25...) a metros reales
-    float realSize = Size * Radius;
-
-    // FACTOR DE CALIDAD (QualityFactor)
-    // 2.0 = Calidad Baja (Se simplifica rápido)
-    // 3.0 = Calidad Media 
-    // 4.0 = Calidad Alta (Mantiene el detalle medio mucho más lejos)
-    // 5.0 = Ultra (Cuidado con FPS)
-    float qualityFactor = 4.0f; 
-
-    // Fórmula simple y robusta:
-    // "Divídete si la cámara está más cerca que X veces tu propio tamaño"
-    float splitDist = realSize * qualityFactor;
-
-    // 4. DECISIÓN
-    // Si estamos dentro del rango de división y no hemos llegado al límite de profundidad
-    if (effectiveDist < splitDist && LodLevel < MAX_LOD)
-    {
-        // --- ZONA CERCA / MEDIA (Requiere más detalle) ---
-        if (Children == null) Split(Radius); // Pasar radio si tu Split lo pide
-        foreach (var child in Children) child.Update(CameraPos);
-    }
-    else
-    {
-        // --- ZONA LEJOS (Se queda como bloque grande) ---
-        if (Children != null) Merge();
-        if (MeshInstance == null) CreateMesh();
-        MeshInstance.Visible = true;
+        // Ajuste Angular (Foveated Rendering)
+        // Reduce la calidad en los bordes de la visión para ganar rendimiento
+        float angularFactor = Mathf.Clamp(dot, 0.0f, 1.0f);
+        angularFactor = Mathf.Pow(angularFactor, 3.0f); 
         
-        // DEBUG VISUAL: Colorear según "Nivel" percibido
-        // Esto te ayudará a ver esas "3 zonas" que buscas
-        /*
-        if (LodLevel < 2) MeshInstance.Modulate = new Color(1, 0, 0); // ROJO (Lejos)
-        else if (LodLevel < 5) MeshInstance.Modulate = new Color(1, 1, 0); // AMARILLO (Medio)
-        else MeshInstance.Modulate = new Color(0, 1, 0); // VERDE (Cerca)
-        */
-    }
+        // 'effectiveDist' engaña al sistema: si estás mirando de reojo, 
+        // le hace creer que estás más lejos para que baje la calidad.
+        float effectiveDist = distToCam / Mathf.Max(angularFactor, 0.1f);
+
+        // --- AQUÍ ESTÁ LA CLAVE DE LOS "3 NIVELES" ---
+        
+        // Convertimos el tamaño relativo (0.5, 0.25...) a metros reales
+        float realSize = Size * Radius;
+
+        // FACTOR DE CALIDAD (QualityFactor)
+        // 2.0 = Calidad Baja (Se simplifica rápido)
+        // 3.0 = Calidad Media 
+        // 4.0 = Calidad Alta (Mantiene el detalle medio mucho más lejos)
+        // 5.0 = Ultra (Cuidado con FPS)
+        float qualityFactor = 4.0f; 
+
+        // Fórmula simple y robusta:
+        // "Divídete si la cámara está más cerca que X veces tu propio tamaño"
+        float splitDist = realSize * qualityFactor;
+
+        // 4. DECISIÓN
+        // Si estamos dentro del rango de división y no hemos llegado al límite de profundidad
+        if (effectiveDist < splitDist && LodLevel < MAX_LOD)
+        {
+            // --- ZONA CERCA / MEDIA (Requiere más detalle) ---
+            if (Children == null) Split(Radius); // Pasar radio si tu Split lo pide
+            foreach (var child in Children) child.Update(CameraPos);
+        }
+        else
+        {
+            // --- ZONA LEJOS (Se queda como bloque grande) ---
+            if (Children != null) Merge();
+            if (MeshInstance == null) CreateMesh();
+            MeshInstance.Visible = true;
+            
+            // DEBUG VISUAL: Colorear según "Nivel" percibido
+            // Esto te ayudará a ver esas "3 zonas" que buscas
+            /*
+            if (LodLevel < 2) MeshInstance.Modulate = new Color(1, 0, 0); // ROJO (Lejos)
+            else if (LodLevel < 5) MeshInstance.Modulate = new Color(1, 1, 0); // AMARILLO (Medio)
+            else MeshInstance.Modulate = new Color(0, 1, 0); // VERDE (Cerca)
+            */
+        }
     }
 
 
@@ -211,7 +211,7 @@ public class PlanetChunk
         MeshInstance.SetInstanceShaderParameter("chunk_size", Size);
 
         RootNode.AddChild(MeshInstance);
-        GD.Print($"[Chunk Debug] Creado visualmente: {MeshInstance.Name} en {Center}");
+        // GD.Print($"[Chunk Debug] Creado visualmente: {MeshInstance.Name} en {Center}");
     }
 
     public void FreeRecursively()

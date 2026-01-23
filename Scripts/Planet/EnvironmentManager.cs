@@ -19,33 +19,51 @@ public partial class EnvironmentManager : Node
 	private Vector4[] _poisData = new Vector4[16];
 
 	private PlanetParamsData _config;
+	private int _gridResolution;
 
-	public void Initialize(RenderingDevice rd, Rid heightMap, Rid vectorField, PlanetParamsData config)
+	public void Initialize(RenderingDevice rd, Rid heightMap, Rid vectorField, PlanetParamsData config, int gridResolution)
 	{
 		_rd = rd;
 		HeightMap = heightMap;
 		VectorField = vectorField;
 		_config = config;
+		_gridResolution = gridResolution;
 		
-		// SetupPOIBuffer();
-		// CreateVisualPOIs();
+		SetupPoiBuffer();
+		CreateInfluenceTexture(); // ← NUEVO
+		CreateVisualPOIs();
 	}
 
 
-
-
-
-
-
-
-
-
-
-
-
-
-
-
+	private void CreateInfluenceTexture()
+	{
+		int gridRes = _gridResolution;
+		
+		var fmt3d = new RDTextureFormat {
+			Width = (uint)gridRes, 
+			Height = (uint)gridRes, 
+			Depth = (uint)gridRes,
+			TextureType = RenderingDevice.TextureType.Type3D, // ✅ Correcto
+			Format = RenderingDevice.DataFormat.R8Unorm,      // ✅ Coincide con layout(r8)
+			
+			// CORRECCIÓN: Agregar CanCopyFromBit hace al driver más feliz
+			UsageBits = RenderingDevice.TextureUsageBits.StorageBit | 
+						RenderingDevice.TextureUsageBits.SamplingBit | 
+						RenderingDevice.TextureUsageBits.CanUpdateBit |
+						RenderingDevice.TextureUsageBits.CanCopyFromBit |
+						RenderingDevice.TextureUsageBits.CanCopyToBit
+		};
+		
+		InfluenceTexture = _rd.TextureCreate(fmt3d, new RDTextureView(), 
+											new Godot.Collections.Array<byte[]>());
+		
+		// Limpieza inicial para evitar basura en memoria VRAM
+		if (InfluenceTexture.IsValid) {
+			_rd.TextureClear(InfluenceTexture, Colors.Black, 0, 1, 0, 1);
+		} else {
+			GD.PrintErr("[EnvironmentManager] ERROR: No se pudo crear InfluenceTexture 3D");
+		}
+	}
 
 
 	public void SetupPoiBuffer()
@@ -123,33 +141,6 @@ public partial class EnvironmentManager : Node
 	}
 
 
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
 	public void ToggleVisuals(bool visible)
 	{
 		foreach (var v in _poiVisuals) v.Visible = visible;
@@ -168,8 +159,18 @@ public partial class EnvironmentManager : Node
 	// 	CreateVisualPOIs();
 	// }
 
-	public void SetInfluenceTexture(Rid influenceTex)
+	// public void SetInfluenceTexture(Rid influenceTex)
+	// {
+	// 	InfluenceTexture = influenceTex;
+	// }
+
+	public override void _ExitTree()
 	{
-		InfluenceTexture = influenceTex;
+		if (_rd != null && InfluenceTexture.IsValid) {
+			_rd.FreeRid(InfluenceTexture);
+		}
+		if (_rd != null && POIBuffer.IsValid) {
+			_rd.FreeRid(POIBuffer);
+		}
 	}
 }

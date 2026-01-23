@@ -40,7 +40,7 @@ public partial class PlanetRender : Node3D
 	public override void _Process(double delta)
 	{
 
-		GD.Print(_currentRadius);
+		// GD.Print(_currentRadius);
 		
 		// 1. Acumular tiempo
 		_lodUpdateTimer += delta;

@@ -1,89 +1,86 @@
 shader_type spatial;
-// Desactivamos el culling para que el sprite se vea por ambos lados si gira
-render_mode blend_mix, depth_draw_opaque, cull_disabled, diffuse_burley, specular_schlick_ggx;
+
+// CRÍTICO: 'skip_vertex_transform' le dice a Godot: 
+// "Yo ya calculé la posición respecto a la cámara, no apliques la ModelViewMatrix de nuevo".
+render_mode blend_mix, depth_draw_opaque, cull_disabled, diffuse_burley, specular_schlick_ggx, skip_vertex_transform;
 
 // --- UNIFORMS ---
-uniform sampler2D agent_pos_texture;   // Posición (XYZ) + Timer (W)
-uniform sampler2D agent_color_texture; // Color (RGB) + Vida (W)
-uniform int tex_width = 2048;
+uniform sampler2D agent_pos_texture : filter_nearest;   // IMPORTANTE: filter_nearest
+uniform sampler2D agent_color_texture : filter_nearest;
+uniform int tex_width = 2048; // Entero, coincidir con C#
 
-// TAMAÑO VISUAL: Radio del agente
-uniform float agent_radius_visual = 0.2; 
+uniform float agent_radius_visual = 1.5; // Aumentado un poco para debug
 
 varying vec4 v_color;
 
 void vertex() {
     // 1. GPU FETCH
     int idx = INSTANCE_ID;
-    ivec2 tex_coord = ivec2(idx % tex_width, idx / tex_width);
+    
+    // Matemática de índice entero segura
+    int row = idx / tex_width;
+    int col = idx % tex_width;
+    ivec2 tex_coord = ivec2(col, row);
 
     vec4 data_pos = texelFetch(agent_pos_texture, tex_coord, 0);
     vec4 data_col = texelFetch(agent_color_texture, tex_coord, 0);
 
-    // 2. FILTRO DE VIDA (Sin usar NAN para evitar crash)
-    if (data_col.w < 0.1) {
-        // Colapsar vértice a 0.0 (Invisible y seguro)
+    // 2. FILTRO DE VIDA (DEBUG: Deshabilitado para diagnóstico)
+    // Si W < 0.1, colapsamos el vértice.
+    // data_col.w viene del Compute Shader (0.0 = Muerto, 1.0 = Vivo)
+    bool is_dead = false; // DEBUG: Forzado a false para ver todos los agentes
+    
+    // DEBUG: Mostrar valores leídos
+    // GD.Print("Agent " + idx + " pos=" + data_pos.xyz + " col.w=" + data_col.w); // En Godot esto no funciona directo
+    
+    if (is_dead) {
+        // Colapsar al infinito o a cero
         VERTEX = vec3(0.0);
-        // Anular matriz para evitar artefactos
-        MODELVIEW_MATRIX = mat4(0.0);
     } else {
-        // --- TÉCNICA: MANUAL CAMERA-FACING QUAD ---
-        
-        // A. Posición del Centro del Agente en el Mundo
-        vec3 world_center = data_pos.xyz;
+        // data_pos.xyz AHORA ES LOCAL (Relativo al centro del planeta)
+        vec3 local_pos_on_sphere = data_pos.xyz;
 
-        // B. Offset Vertical (Hover)
-        // Levantamos el centro un radio hacia arriba (en dirección normal de superficie)
-        // para que la esfera parezca apoyada sobre el suelo.
-        vec3 up_dir = vec3(0,1,0);
-        if (length(world_center) > 0.001) up_dir = normalize(world_center);
-        world_center += up_dir * agent_radius_visual;
+        // 1. Transformar posición local -> View Space
+        // MODELVIEW_MATRIX aplica la transformación del Planeta + Cámara
+        vec3 view_center = (MODELVIEW_MATRIX * vec4(local_pos_on_sphere, 1.0)).xyz;
 
-        // C. Convertir el Centro al "View Space" (Espacio de Cámara)
-        // En View Space, la cámara está en (0,0,0) y mira hacia -Z.
-        vec3 view_center = (VIEW_MATRIX * vec4(world_center, 1.0)).xyz;
+        // 2. Billboard
+        // Queremos que el quad mire a la cámara. En View Space, la cámara mira hacia -Z.
+        // Simplemente sumamos el offset XY en View Space.
+        vec2 offset = UV * 2.0 - 1.0;
+        vec3 local_quad_pos = vec3(offset * agent_radius_visual, 0.0);
 
-        // D. Reconstruir el Vértice Local (Anti-Fideo)
-        // Ignoramos la rotación de la malla original.
-        // Usamos las coordenadas UV para saber qué esquina del cuadrado es este vértice.
-        // UV (0,0) -> (-1, -1), UV (1,1) -> (1, 1)
-        vec2 corner_offset = (UV * 2.0 - 1.0);
-        
-        // Escalamos por el radio visual
-        vec3 local_pos = vec3(corner_offset * agent_radius_visual, 0.0);
-
-        // E. Posición Final = Centro en Cámara + Offset Local
-        // Al sumar esto en View Space, el offset siempre es plano respecto a la pantalla.
-        VERTEX = view_center + local_pos;
-
-        // F. LIMPIEZA DE MATRIZ
-        // Como ya calculamos la posición final en View Space nosotros mismos (paso C y E),
-        // seteamos la MODELVIEW_MATRIX a Identidad para que Godot no la vuelva a transformar.
-        MODELVIEW_MATRIX = mat4(1.0);
+        // 3. Resultado final
+        VERTEX = view_center + local_quad_pos;
         
         v_color = data_col;
+        // v_color = vec4(1.0, 0.0, 0.0, 1.0);
     }
 }
 
 void fragment() {
-    // --- IMPOSTOR ESFÉRICO ---
+    // --- FORMA CIRCULAR ---
     vec2 uv_centered = UV * 2.0 - 1.0;
-    
-    // Invertir Y si se ve al revés (depende de la malla Quad)
-    // uv_centered.y *= -1.0; 
-
     float dist_sq = dot(uv_centered, uv_centered);
     
+    // Recorte circular duro
     if (dist_sq > 1.0) discard;
     
-    // Normal falsa
+    // --- COLOR DEBUG ---
+    // Si el color viene negro (0,0,0), pintamos magenta para avisar que la textura de color falla
+    // pero la de posición funciona.
+    if (length(v_color.rgb) < 0.01) {
+        ALBEDO = vec3(1.0, 0.0, 1.0); // Magenta Debug
+    } else {
+        ALBEDO = v_color.rgb;
+    }
+    
+    // Simulación simple de esfera
     float z = sqrt(1.0 - dist_sq);
-    vec3 sphere_normal = vec3(uv_centered, z);
+    NORMAL_MAP = vec3(uv_centered, z);
+    NORMAL_MAP_DEPTH = 1.0;
     
-    NORMAL = normalize(sphere_normal);
-    ALBEDO = v_color.rgb;
-    
-    ROUGHNESS = 0.3;
+    ROUGHNESS = 0.5;
     METALLIC = 0.0;
     EMISSION = v_color.rgb * 0.2;
 }

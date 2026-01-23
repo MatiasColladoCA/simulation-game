@@ -11,7 +11,7 @@ public partial class Planet : Node3D
 	private RenderingDevice _rd;
 	
 	// RIDs que el planeta "posee" y expone al exterior
-	private Rid _heightMapRid;
+	public Rid _heightMapRid;
 	private Rid _normalMapRid;
 
 	private Rid _vectorFieldRid;
@@ -47,16 +47,26 @@ public partial class Planet : Node3D
 	public Rid GetInfluenceTextureRid() => _poiSystem?.GetInfluenceTexture() ?? new Rid();
 	public Rid GetPoiBufferRid() => _poiSystem?.GetPoiBuffer() ?? new Rid();
 
+	[Export] public EnvironmentManager Env;
+	// public EnvironmentManager Env;
+
+	// Almacén en RAM de la altura (Solo lectura rápida)
+	private Image[] _cpuHeightMapFaces;
+	private int _heightMapSize;
+
+
+
 	public override void _Ready()
 	{
 		// Instanciación del Baker (Obrero temporal)
 		_terrainBaker = new PlanetBaker();
 		_terrainBaker.Name = "Internal_Baker";
 		AddChild(_terrainBaker);
+
 	}
 
 	// --- PUNTO DE ENTRADA ---
-	public bool Initialize(RenderingDevice rd, PlanetParamsData config, PoiPainter sharedPainter)
+	public bool Initialize(RenderingDevice rd, PlanetParamsData config, PoiPainter sharedPainter, int gridResolution)
 	{
 		_rd = rd;
 		
@@ -71,15 +81,15 @@ public partial class Planet : Node3D
 		// ¡A trabajar!
 		var bakeResult = _terrainBaker.Bake(_rd);
 
-		if (!bakeResult.Success)
-		{
-			GD.PrintErr($"[Planet] Falló la generación del terreno.");
-			return false;
-		}
-		else
-		{
-			GD.Print($"[Planet] Generación del terreno exitosa.");
-		}
+		// if (!bakeResult.Success)
+		// {
+		// 	GD.PrintErr($"[Planet] Falló la generación del terreno.");
+		// 	return false;
+		// }
+		// else
+		// {
+		// 	GD.Print($"[Planet] Generación del terreno exitosa.");
+		// }
 
 		// 3. CAPTURA DE RESULTADOS
 		// El planeta toma posesión de las texturas generadas
@@ -119,6 +129,31 @@ public partial class Planet : Node3D
 		else
 		{
 			GD.PrintErr("[Planet] Falta asignar el nodo 'Renderer' en el Inspector.");
+		}
+
+		// Aquí es donde "rellenamos" el Env con los datos que generó el Baker
+		if (Env != null)
+		{
+			GD.Print("[Planet] Inicializando Environment System...");
+			
+			// Le pasamos al Environment los mapas que acabamos de cocinar
+			Env.Initialize(
+				_rd, 
+				_heightMapRid,   // Para que sepa la altura del terreno
+				_vectorFieldRid, // Para que sepa las corrientes de viento/flujo
+				_params,         // Radio, semilla, etc.
+				gridResolution   // Resolución de la grilla 3D
+			);
+			
+			// Opcional: Si quieres generar los POIs inmediatamente
+			// Env.SetupPoiBuffer(); 
+			// Env.CreateVisualPOIs();
+		}
+		else
+		{
+			GD.PrintErr("[Planet] CRÍTICO: La variable 'Env' es null. Asigna el nodo EnvironmentManager en el Inspector de Planet.tscn");
+			// Nota: No retornamos false aquí para permitir debugging visual del terreno, 
+			// pero los agentes fallarán.
 		}
 
 		// 5. GENERAR POIS
@@ -254,7 +289,7 @@ public partial class Planet : Node3D
 			Vector3 dirFromCenter = sphereHit.Normalized();
 			
 			// Usamos la misma matemática que el Baker para obtener la altura exacta
-			float terrainHeight = TerrainNoise.GetTerrainHeight(dirFromCenter, _params);
+			float terrainHeight = GetHeightAtDirection(dirFromCenter);
 			
 			// Recalculamos la posición exacta sobre la superficie
 			Vector3 terrainHit = dirFromCenter * (_params.Radius + terrainHeight);
@@ -265,6 +300,84 @@ public partial class Planet : Node3D
 		}
 
 		return false;
+	}
+
+	// Llama a esto AL FINAL de tu proceso de generación (SpawnWorld/Bake)
+// En Planet.cs
+
+	public void CacheHeightMapToCPU()
+	{
+		// Array de 6 imágenes (una por cara del cubo)
+		_cpuHeightMapFaces = new Image[6];
+
+		for (int i = 0; i < 6; i++)
+		{
+			// "i" es el índice de la cara (0 a 5)
+			// Esto descarga la imagen de la VRAM a la RAM
+			_cpuHeightMapFaces[i] = RenderingServer.Texture2DLayerGet(_heightMapRid, i);
+		}
+		
+		if (_cpuHeightMapFaces[0] != null)
+		{
+			_heightMapSize = _cpuHeightMapFaces[0].GetWidth();
+			GD.Print($"[Planet] HeightMap cacheado en CPU ({_heightMapSize}x{_heightMapSize} x 6 caras).");
+		}
+	}
+
+
+
+
+	public float GetHeightAtDirection(Vector3 dir)
+	{
+		if (_cpuHeightMapFaces == null) return 0.0f;
+
+		// 1. Determinar cara y UV (Matemática de Cubemap estándar)
+		Vector3 absDir = dir.Abs();
+		int faceIndex = 0;
+		Vector2 uv = Vector2.Zero;
+		float ma = 0; // Major Axis
+
+		if (absDir.Z >= absDir.X && absDir.Z >= absDir.Y)
+		{
+			faceIndex = (dir.Z < 0) ? 5 : 4; // Back : Front (En Godot: 4=Front, 5=Back, orden estándar OpenGL varía)
+			ma = 0.5f / absDir.Z;
+			uv = new Vector2((dir.Z < 0 ? -dir.X : dir.X), -dir.Y);
+		}
+		else if (absDir.Y >= absDir.X)
+		{
+			faceIndex = (dir.Y < 0) ? 3 : 2; // Bottom : Top
+			ma = 0.5f / absDir.Y;
+			uv = new Vector2(dir.X, (dir.Y < 0 ? -dir.Z : dir.Z));
+		}
+		else
+		{
+			faceIndex = (dir.X < 0) ? 1 : 0; // Left : Right
+			ma = 0.5f / absDir.X;
+			uv = new Vector2((dir.X < 0 ? dir.Z : -dir.Z), -dir.Y);
+		}
+
+		// Convertir a coordenadas 0..1
+		// Nota: El mapeo exacto de caras depende de cómo tu shader escribe el cubemap.
+		// Si ves errores, rota las caras o invierte ejes aquí.
+		uv = uv * ma + new Vector2(0.5f, 0.5f);
+
+		// 2. Leer Píxel
+		int x = (int)(uv.X * (_heightMapSize - 1));
+		int y = (int)(uv.Y * (_heightMapSize - 1));
+		
+		// Clamp por seguridad
+		x = Mathf.Clamp(x, 0, _heightMapSize - 1);
+		y = Mathf.Clamp(y, 0, _heightMapSize - 1);
+
+		// Leer el canal ROJO (R32Float)
+		Color pixel = _cpuHeightMapFaces[faceIndex].GetPixel(x, y);
+		float height01 = pixel.R; // O pixel.r dependiendo de la versión de Godot
+
+		// 3. Descomprimir altura
+		// El shader guarda altura normalizada o cruda? 
+		// Si guardaste altura absoluta en R32F, úsala directo.
+		// Si normalizaste (0..1), multiplica por NoiseHeight.
+		return height01 * _params.NoiseHeight; 
 	}
 
 

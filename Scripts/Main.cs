@@ -32,18 +32,23 @@ public partial class Main : Node
 	[Export(PropertyHint.Range, "0,1")] public float MaskStart = 0.6f;
 	[Export(PropertyHint.Range, "0,1")] public float MaskEnd = 0.75f;
 
+	[ExportGroup("Simulation Grid")]
+	[Export(PropertyHint.Range, "32,128")] public int GridResolution = 64; // Resolución de la grilla 3D de influencia
+
 	// --- VARIABLES INTERNAS ---
 	private RenderingDevice _rd;
 	private PoiPainter _sharedPoiPainter;
 	private Planet _activePlanet;
 
-	private EnvironmentManager Env;
+	// private EnvironmentManager Env;
 	private bool _isRunning = false;
 	private int _planetIndex = 0;
 	
 	// UI Helpers
 	private LineEdit _consoleInput;
-	private int _nextSpawnIndex = 0;
+	// private int _nextSpawnIndex = 0;
+
+	private int _nextSpawnIndex = 40000;
 
 	public override void _Ready()
 	{
@@ -74,74 +79,217 @@ public partial class Main : Node
 		if (_activePlanet != null)
 		{
 			_activePlanet.QueueFree();
+			_activePlanet = null;
 			// Esperar un frame si fuera necesario, pero QueueFree lo maneja
 		}
 
 		// B. Configuración
 		if (RandomizeSeed) WorldSeed = (int)DateTime.Now.Ticks;
-		int planetSeed = HashCode.Combine(WorldSeed, _planetIndex++);
+
+		// --- FASE 3: Instanciación del Mundo ---
+		// REEMPLAZADO: planetNode = SetupPlanet(WorldSeed); 
+		// REEMPLAZADO: if (!success) { ... }
+		var newPlanet = SetupPlanet(WorldSeed);
 		
-		var planetConfig = GeneratePlanetConfig(planetSeed);
-
-		// C. Instanciar Planeta
-		var planetNode = PlanetPrefab.Instantiate<Planet>();
-		AddChild(planetNode);
-		_activePlanet = planetNode;
-
-		// Inyectar dependencias visuales al planeta antes de inicializar
-		planetNode.PoiVisualScene = PoiVisualPrefab ?? PoiMeshPrefab;
-
-		// D. INICIALIZAR PLANETA (Aquí ocurre la magia interna)
-		bool success = planetNode.Initialize(_rd, planetConfig, _sharedPoiPainter);
-		
-		if (!success)
+		if (newPlanet == null)
 		{
 			GD.PrintErr("[Main] Falló la inicialización del planeta. Abortando.");
 			return;
 		}
 
-		// E. CONECTAR CON SISTEMA DE AGENTES
-		// El planeta ya tiene los datos, ahora se los pasamos a los agentes
-		SetupAgents(planetNode);
+		_activePlanet = newPlanet; // Asignación de estado
+
+		// --- FASE 4: Inyección a Sistemas ---
+		SetupAgents(_activePlanet);
 
 		_isRunning = true;
-		GD.Print("[Main] Mundo AAA Inicializado.");
+		GD.Print("[Main] Mundo Inicializado y Simulación Activa.");
 	}
+
+
+	// CAMBIO DE FIRMA: private void SetupPlanet(int WorldSeed)
+	private Planet SetupPlanet(int currentSeed)
+	{
+		int planetSeed = HashCode.Combine(currentSeed, _planetIndex++);
+		
+		// Asumo que este método existe o es generado localmente
+		var planetConfig = GeneratePlanetConfig(planetSeed); 
+
+		// 1. Instanciar
+		var planetNode = PlanetPrefab.Instantiate<Planet>();
+		AddChild(planetNode);
+		
+		// 2. Inyectar dependencias visuales
+		planetNode.PoiVisualScene = PoiVisualPrefab ?? PoiMeshPrefab;
+
+		// 3. Inicializar Lógica
+		// REEMPLAZADO: bool success = planetNode.Initialize(_rd, planetConfig, _sharedPoiPainter, GridResolution);
+		// REEMPLAZADO: (No retornaba nada)
+		bool success = planetNode.Initialize(_rd, planetConfig, _sharedPoiPainter, GridResolution);
+
+		if (!success)
+		{
+			planetNode.QueueFree();
+			return null;
+		}
+
+		return planetNode;
+	}
+
+
+
 
 	private void SetupAgents(Planet planet)
 	{
-		// 1. Extraer RIDs del planeta (Propiedad del Planeta -> Consumo de Agentes)
-		Rid heightMap = planet.GetHeightMapRid();
-		Rid influenceTex = planet.GetInfluenceTextureRid();
-		Rid poiBuffer = planet.GetPoiBufferRid();
-		Rid vectorField = planet.GetVectorFieldRid();
-		PlanetParamsData paramsData = planet.GetParams();
 
-		// Validación de seguridad
-		if (!heightMap.IsValid || !influenceTex.IsValid || !poiBuffer.IsValid)
-		{
-			GD.PrintErr("[Main] Faltan recursos GPU del planeta para iniciar agentes.");
+		// --- VALIDACIÓN DEFENSIVA ---
+		var env = planet.Env;
+		if (env == null || !env.POIBuffer.IsValid || !env.InfluenceTexture.IsValid) {
+			GD.PrintErr("[Main] CRÍTICO: EnvironmentManager inválido o incompleto.");
+			return;
+		}
+		
+		
+		// --- INICIALIZACIÓN DE CÓMPUTO ---
+		AgentCompute.Initialize(_rd, planet, env, planet.GetParams(), GridResolution);
+		
+		if (!AgentCompute.IsInitialized) {
+			GD.PrintErr("[Main] CRÍTICO: AgentSystem falló al inicializar.");
+			return;
+		}
+		
+		// --- CONFIGURACIÓN DE RENDER ---
+		var posRid = AgentCompute.GetPosTextureRid();
+		var colRid = AgentCompute.GetColorTextureRid();
+		
+		if (!posRid.IsValid || !colRid.IsValid) {
+			GD.PrintErr("[Main] CRÍTICO: RIDs de texturas inválidos.");
 			return;
 		}
 
-		// 2. Inicializar entorno Legacy (Si EnvManager sigue existiendo como estático)
-		// Asumiendo que has adaptado EnvManager para no depender de PlanetRender
-		Env.Initialize(_rd, heightMap, vectorField, paramsData);
-		Env.SetInfluenceTexture(influenceTex);
-		Env.SetupPoiBuffer();
+		// 1. Desconectar AgentRenderer de Main (o de su padre actual)
+		// GetParent() nos devuelve Main. Lo removemos de su lista de hijos.
+		AgentRenderer.GetParent()?.RemoveChild(AgentRenderer);
 
-		// 3. Inicializar Compute de Agentes
-		AgentCompute.Initialize(_rd, Env, paramsData);
+		// 2. Conectarlo al Planeta
+		// Ahora AgentRenderer viaja con el planeta.
+		planet.AddChild(AgentRenderer);
 
-		// 4. Inicializar Render de Agentes
-		var posRid = AgentCompute.GetPosTextureRid();
-		var colRid = AgentCompute.GetColorTextureRid();
+		// 3. Resetear Transformaciones (CRÍTICO)
+		// Al cambiar de padre, queremos que esté en el centro exacto del nuevo padre.
+		AgentRenderer.Position = Vector3.Zero;
+		AgentRenderer.Rotation = Vector3.Zero;
+		AgentRenderer.Scale = Vector3.One;
+
+
+		
+
+		AgentRenderer.GetParent()?.RemoveChild(AgentRenderer);
+		planet.AddChild(AgentRenderer);
+
+		// Resetear transform del render para que coincida con el centro del planeta
+		AgentRenderer.Position = Vector3.Zero;
+		AgentRenderer.Rotation = Vector3.Zero;
+
+		
 		AgentRenderer.Initialize(posRid, colRid, AgentCompute.AgentCount);
 		
-		GD.Print("[Main] Agentes conectados al terreno.");
+		GD.Print($"[Main] {AgentCompute.AgentCount} Agentes conectados al sistema.");
+	}
+	
+
+	public override void _Process(double delta)
+	{
+		if (!_isRunning) return;
+		
+		// Loop de simulación
+		double time = Time.GetTicksMsec() / 1000.0;
+		
+		if (AgentCompute != null)
+		{
+			AgentCompute.UpdateSimulation(delta, time);
+			
+			// Actualizar UI
+			if (UI != null) UI.UpdateStats(delta, (int)AgentCompute.ActiveAgentCount);
+		}
 	}
 
-	private PlanetParamsData GeneratePlanetConfig(int seed)
+	public override void _UnhandledInput(InputEvent @event)
+	{
+		if (@event.IsActionPressed("toggle_console")) ToggleConsole();
+
+		if (_activePlanet != null && @event is InputEventMouseButton mb && mb.Pressed && mb.ButtonIndex == MouseButton.Left)
+		{
+			if (Input.IsKeyPressed(Key.Ctrl))
+			{
+				SpawnAgentAtMouse(mb.Position);
+			}
+		}
+		
+		// Reset rápido para debug
+		if (@event is InputEventKey k && k.Pressed && k.Keycode == Key.R)
+		{
+			SpawnWorld();
+		}
+	}
+
+	private void SpawnAgentAtMouse(Vector2 mousePos)
+	{
+		GD.Print("SpawnAgentsAtMouse");
+		if (_activePlanet == null) return;
+
+		var camera = GetViewport().GetCamera3D();
+		Vector3 rayOrigin = camera.ProjectRayOrigin(mousePos);
+		Vector3 rayDir = camera.ProjectRayNormal(mousePos);
+
+		// Delegamos la matemática al Planeta. Main no calcula esferas.
+		if (_activePlanet.RaycastHit(rayOrigin, rayDir, out Vector3 hitPoint))
+		{
+			// --- BLOQUE DE DEBUG VISUAL ---
+			// var debugSphere = new MeshInstance3D();
+			// debugSphere.Mesh = new SphereMesh { Radius = 2.0f, Height = 4.0f }; // Tamaño visible
+			// debugSphere.MaterialOverride = new StandardMaterial3D { AlbedoColor = Colors.Red, EmissionEnabled = true, Emission = Colors.Red, EmissionEnergyMultiplier = 2.0f };
+			// AddChild(debugSphere);
+			// debugSphere.GlobalPosition = hitPoint;
+			
+			// // Auto-destruir en 2 segundos para no llenar la memoria
+			// GetTree().CreateTimer(2.0f).Connect("timeout", Callable.From(debugSphere.QueueFree));
+			// // -----------------------------
+
+			Vector3 localHit = _activePlanet.ToLocal(hitPoint);
+
+		
+			// "Revivimos" un agente en esa posición
+			AgentCompute.SpawnAgent(localHit, _nextSpawnIndex);
+			
+			// Ciclo circular para reutilizar agentes (Object Pooling en GPU)
+			_nextSpawnIndex = 4000 + ((_nextSpawnIndex - 4000 + 1) % 1000);
+			
+			GD.Print($"[Main] Agente {_nextSpawnIndex} desplegado en: {hitPoint}");		}
+	}
+
+		private void ToggleConsole()
+	{
+		if (_consoleInput == null) return;
+
+		bool isVisible = !_consoleInput.Visible;
+		_consoleInput.Visible = isVisible;
+
+		if (isVisible)
+		{
+			_consoleInput.GrabFocus();
+			Input.MouseMode = Input.MouseModeEnum.Visible;
+		}
+		else
+		{
+			_consoleInput.ReleaseFocus();
+			_consoleInput.Text = "";
+			Input.MouseMode = Input.MouseModeEnum.Captured;
+		}
+	}
+
+
+		private PlanetParamsData GeneratePlanetConfig(int seed)
 	{
 		// Construir struct basado en los sliders del Inspector
 		var rng = new RandomNumberGenerator();
@@ -150,7 +298,7 @@ public partial class Main : Node
 		return new PlanetParamsData
 		{
 			PlanetSeed = seed,
-			Radius = 100.0f, // O usa un export
+			Radius = 1000.0f, // O usa un export
 			ResolutionF = 1024.0f,
 			
 			// Ruido
@@ -176,77 +324,9 @@ public partial class Main : Node
 		};
 	}
 
-	public override void _Process(double delta)
-	{
-		if (!_isRunning) return;
-		
-		// Loop de simulación
-		double time = Time.GetTicksMsec() / 1000.0;
-		
-		if (AgentCompute != null)
-		{
-			// AgentCompute.UpdateSimulation(delta, time);
-			
-			// Actualizar UI
-			// if (UI != null) UI.UpdateStats(delta, (int)AgentCompute.ActiveAgentCount);
-		}
-	}
 
-	public override void _UnhandledInput(InputEvent @event)
-	{
-		if (@event.IsActionPressed("toggle_console")) ToggleConsole();
 
-		if (_activePlanet != null && @event is InputEventMouseButton mb && mb.Pressed && mb.ButtonIndex == MouseButton.Left)
-		{
-			if (Input.IsKeyPressed(Key.Ctrl))
-			{
-				SpawnAgentAtMouse(mb.Position);
-			}
-		}
-		
-		// Reset rápido para debug
-		if (@event is InputEventKey k && k.Pressed && k.Keycode == Key.R)
-		{
-			SpawnWorld();
-		}
-	}
 
-	private void SpawnAgentAtMouse(Vector2 mousePos)
-	{
-		if (_activePlanet == null) return;
-
-		var camera = GetViewport().GetCamera3D();
-		Vector3 rayOrigin = camera.ProjectRayOrigin(mousePos);
-		Vector3 rayDir = camera.ProjectRayNormal(mousePos);
-
-		// Delegamos la matemática al Planeta. Main no calcula esferas.
-		if (_activePlanet.RaycastHit(rayOrigin, rayDir, out Vector3 hitPoint))
-		{
-			// AgentCompute.SpawnAgent(hitPoint, _nextSpawnIndex);
-			// _nextSpawnIndex = (_nextSpawnIndex + 1) % AgentCompute.AgentCount;
-			GD.Print($"[Main] Spawn intento en: {hitPoint}");
-		}
-	}
-
-		private void ToggleConsole()
-	{
-		if (_consoleInput == null) return;
-
-		bool isVisible = !_consoleInput.Visible;
-		_consoleInput.Visible = isVisible;
-
-		if (isVisible)
-		{
-			_consoleInput.GrabFocus();
-			Input.MouseMode = Input.MouseModeEnum.Visible;
-		}
-		else
-		{
-			_consoleInput.ReleaseFocus();
-			_consoleInput.Text = "";
-			Input.MouseMode = Input.MouseModeEnum.Captured;
-		}
-	}
 	
 	// public override void _ExitTree()
 	// {
@@ -265,163 +345,149 @@ public partial class Main : Node
 
 
 
-// --- LÓGICA DE INPUT (Consola y Debug) ---
+// // --- LÓGICA DE INPUT (Consola y Debug) ---
 
-	private void OnConsoleInputSubmitted(string text)
-	{
-		if (string.IsNullOrWhiteSpace(text)) return;
+// 	private void OnConsoleInputSubmitted(string text)
+// 	{
+// 		if (string.IsNullOrWhiteSpace(text)) return;
 
-		string[] args = text.Trim().ToLower().Split(' ', StringSplitOptions.RemoveEmptyEntries);    
+// 		string[] args = text.Trim().ToLower().Split(' ', StringSplitOptions.RemoveEmptyEntries);    
 		
-		// Validación: Comando "agents" + parámetro numérico
-		if (args.Length >= 2 && args[0] == "agents")
-		{
-			if (int.TryParse(args[1], out int count) && AgentCompute != null)
-			{
-				// Ejecución en el sistema de agentes
-				AgentCompute.SpawnRandomAgents(count);
-				GD.Print($"[Console] Ejecutando spawn masivo: {count} agentes.");
-			}
-			else
-			{
-				GD.PrintErr($"[Console] Error: '{args[1]}' no es un número válido o el sistema de agentes no está listo.");
-			}
-		}
-		else
-		{
-			GD.Print($"[Console] Comando desconocido: {args[0]}");
-		}
+// 		// Validación: Comando "agents" + parámetro numérico
+// 		if (args.Length >= 2 && args[0] == "agents")
+// 		{
+// 			if (int.TryParse(args[1], out int count) && AgentCompute != null)
+// 			{
+// 				// Ejecución en el sistema de agentes
+// 				AgentCompute.SpawnRandomAgents(count);
+// 				GD.Print($"[Console] Ejecutando spawn masivo: {count} agentes.");
+// 			}
+// 			else
+// 			{
+// 				GD.PrintErr($"[Console] Error: '{args[1]}' no es un número válido o el sistema de agentes no está listo.");
+// 			}
+// 		}
+// 		else
+// 		{
+// 			GD.Print($"[Console] Comando desconocido: {args[0]}");
+// 		}
 		
-		// Al enviar, siempre cerramos la consola
-		ToggleConsole();
-	}
+// 		// Al enviar, siempre cerramos la consola
+// 		ToggleConsole();
+// 	}
 
-	// --- TECLAS Y MOUSE ---
 
-	// public override void _UnhandledInput(InputEvent @event)
-	// {
-	//     // Toggle de Consola
-	//     if (@event.IsActionPressed("toggle_console"))
-	//     {
-	//         ToggleConsole();
-	//         GetViewport().SetInputAsHandled();
-	//         return;
-	//     }
 
-	//     // Hotkeys de Debug
-	//     if (@event is InputEventKey keyEvent && keyEvent.Pressed)
-	//     {
-	//         // Debug de texturas visuales (Opcional, si PlanetRender soporta debug view)
-	//         if (keyEvent.Keycode == Key.F)
-	//         {
-	//             // Ejemplo: _activePlanet?.ToggleVectorFieldDebug();
-	//             GD.Print("[Debug] Vector Field Toggle (Not implemented yet)");
-	//         }
-	//         else if (keyEvent.Keycode == Key.R)
-	//         {
-	//             GD.Print("[Main] Regenerando mundo...");
-	//             SpawnWorld();
-	//         }
-	//     }
 
-	//     // Spawn de Agentes con Mouse
-	//     if (@event is InputEventMouseButton mouseEvent && mouseEvent.Pressed && mouseEvent.ButtonIndex == MouseButton.Left)
-	//     {
-	//         if (Input.IsKeyPressed(Key.Ctrl))
-	//         {
-	//             SpawnAgentAtMouse(mouseEvent.Position);
-	//         }
-	//     }
-	// }
 
-	// private void SpawnAgentAtMouse(Vector2 mousePos)
-	// {
-	//     if (_activePlanet == null) return;
 
-	//     var camera = GetViewport().GetCamera3D();
-	//     Vector3 rayOrigin = camera.ProjectRayOrigin(mousePos);
-	//     Vector3 rayDir = camera.ProjectRayNormal(mousePos);
 
-	//     // Delegamos la matemática al Planeta.
-	//     if (_activePlanet.RaycastHit(rayOrigin, rayDir, out Vector3 hitPoint))
-	//     {
-	//         // Inyectar en el sistema de agentes
-	//         if (AgentCompute != null)
-	//         {
-	//             AgentCompute.SpawnAgent(hitPoint, _nextSpawnIndex);
-	//             _nextSpawnIndex = (_nextSpawnIndex + 1) % 1000; // Límite arbitrario para índices cíclicos
-	//             GD.Print($"[Main] Agente spawneado en: {hitPoint}");
-	//         }
+
+// 	// --- TECLAS Y MOUSE ---
+
+// 	public override void _UnhandledInput(InputEvent @event)
+// 	{
+// 	    // Toggle de Consola
+// 	    if (@event.IsActionPressed("toggle_console"))
+// 	    {
+// 	        ToggleConsole();
+// 	        GetViewport().SetInputAsHandled();
+// 	        return;
+// 	    }
+
+// 	    // Hotkeys de Debug
+// 	    if (@event is InputEventKey keyEvent && keyEvent.Pressed)
+// 	    {
+// 	        // Debug de texturas visuales (Opcional, si PlanetRender soporta debug view)
+// 	        if (keyEvent.Keycode == Key.F)
+// 	        {
+// 	            // Ejemplo: _activePlanet?.ToggleVectorFieldDebug();
+// 	            GD.Print("[Debug] Vector Field Toggle (Not implemented yet)");
+// 	        }
+// 	        else if (keyEvent.Keycode == Key.R)
+// 	        {
+// 	            GD.Print("[Main] Regenerando mundo...");
+// 	            SpawnWorld();
+// 	        }
+// 	    }
+
+// 	    // Spawn de Agentes con Mouse
+// 	    if (@event is InputEventMouseButton mouseEvent && mouseEvent.Pressed && mouseEvent.ButtonIndex == MouseButton.Left)
+// 	    {
+// 	        if (Input.IsKeyPressed(Key.Ctrl))
+// 	        {
+// 	            SpawnAgentAtMouse(mouseEvent.Position);
+// 	        }
+// 	    }
+// 	}
+
+// 	private void SpawnAgentAtMouse(Vector2 mousePos)
+// 	{
+// 	    if (_activePlanet == null) return;
+
+// 	    var camera = GetViewport().GetCamera3D();
+// 	    Vector3 rayOrigin = camera.ProjectRayOrigin(mousePos);
+// 	    Vector3 rayDir = camera.ProjectRayNormal(mousePos);
+
+// 	    // Delegamos la matemática al Planeta.
+// 	    if (_activePlanet.RaycastHit(rayOrigin, rayDir, out Vector3 hitPoint))
+// 	    {
+// 	        // Inyectar en el sistema de agentes
+// 	        if (AgentCompute != null)
+// 	        {
+// 	            AgentCompute.SpawnAgent(hitPoint, _nextSpawnIndex);
+// 	            _nextSpawnIndex = (_nextSpawnIndex + 1) % 1000; // Límite arbitrario para índices cíclicos
+// 	            GD.Print($"[Main] Agente spawneado en: {hitPoint}");
+// 	        }
 			
-	//         // Debug visual temporal
-	//         // var debugSphere = new MeshInstance3D { Mesh = new SphereMesh { Radius = 2f } };
-	//         // AddChild(debugSphere);
-	//         // debugSphere.GlobalPosition = hitPoint;
-	//     }
-	// }
+// 	        // Debug visual temporal
+// 	        // var debugSphere = new MeshInstance3D { Mesh = new SphereMesh { Radius = 2f } };
+// 	        // AddChild(debugSphere);
+// 	        // debugSphere.GlobalPosition = hitPoint;
+// 	    }
+// 	}
 
-	// private void ToggleConsole()
-	// {
-	//     // Asumiendo que UI tiene un método o propiedad para la consola
-	//     if (_consoleInput == null) 
-	//     {
-	//         // Busca el nodo si no está asignado (o usa una referencia exportada en UI)
-	//         _consoleInput = UI?.GetNodeOrNull<LineEdit>("ConsoleInput"); // Ajusta la ruta según tu escena UI
-	//     }
+// 	private void ToggleConsole()
+// 	{
+// 	    // Asumiendo que UI tiene un método o propiedad para la consola
+// 	    if (_consoleInput == null) 
+// 	    {
+// 	        // Busca el nodo si no está asignado (o usa una referencia exportada en UI)
+// 	        _consoleInput = UI?.GetNodeOrNull<LineEdit>("ConsoleInput"); // Ajusta la ruta según tu escena UI
+// 	    }
 
-	//     if (_consoleInput == null) return;
+// 	    if (_consoleInput == null) return;
 
-	//     bool isVisible = !_consoleInput.Visible;
-	//     _consoleInput.Visible = isVisible;
+// 	    bool isVisible = !_consoleInput.Visible;
+// 	    _consoleInput.Visible = isVisible;
 
-	//     if (isVisible)
-	//     {
-	//         _consoleInput.GrabFocus();
-	//         Input.MouseMode = Input.MouseModeEnum.Visible;
-	//     }
-	//     else
-	//     {
-	//         _consoleInput.ReleaseFocus();
-	//         _consoleInput.Text = "";
-	//         Input.MouseMode = Input.MouseModeEnum.Captured;
-	//     }
-	// }
+// 	    if (isVisible)
+// 	    {
+// 	        _consoleInput.GrabFocus();
+// 	        Input.MouseMode = Input.MouseModeEnum.Visible;
+// 	    }
+// 	    else
+// 	    {
+// 	        _consoleInput.ReleaseFocus();
+// 	        _consoleInput.Text = "";
+// 	        Input.MouseMode = Input.MouseModeEnum.Captured;
+// 	    }
+// 	}
 
-	// --- CONFIGURACIÓN DE PLANETA (No duplicar si ya está arriba) ---
-	// NOTA: Si ya incluiste GeneratePlanetConfig en la primera parte, BORRA este bloque.
-	/*
-	private PlanetParamsData GeneratePlanetConfig(int planetSeed)
-	{
-		var rng = new RandomNumberGenerator();
-		rng.Seed = (ulong)planetSeed;
-		
-		Vector3 seedOffset = new Vector3(
-			rng.RandfRange(-10000.0f, 10000.0f),
-			rng.RandfRange(-10000.0f, 10000.0f),
-			rng.RandfRange(-10000.0f, 10000.0f)
-		);
-
-		return new PlanetParamsData { 
-			Radius = 100.0f,
-			ResolutionF = 1024.0f,
-			NoiseOffset = seedOffset,
-			PlanetSeed = planetSeed,
-			
-			NoiseScale = 0.6f,
-			NoiseHeight = 70.0f,
-			OceanFloorLevel = 0.45f,
-			WeightMultiplier = 3.5f,
-			WarpStrength = this.WarpStrength,
-			DetailFrequency = this.DetailFrequency,
-			RidgeSharpness = this.RidgeSharpness,
-			GroundDetailFreq = 5.5f,
-			MaskStart = this.MaskStart,
-			MaskEnd = this.MaskEnd,
-			MountainRoughness = 2.0f,
-		};
-	}
-	*/
 	
+
+
+
+
+
+
+
+
+
+
+
+
+
 	// --- LIMPIEZA FINAL ---
 	public override void _ExitTree()
 	{

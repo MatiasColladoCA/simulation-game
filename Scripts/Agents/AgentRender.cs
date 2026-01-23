@@ -3,77 +3,68 @@ using Godot;
 public partial class AgentRender : MultiMeshInstance3D
 {
     private ShaderMaterial _material;
+    
+    // Configuración visual
     private const int DATA_TEX_WIDTH = 2048; // Debe coincidir con AgentSystem
+    private const float AGENT_RADIUS = 1.5f;
 
-    public void Initialize(Rid positionTextureRid, Rid colorTextureRid, int agentCount)
-{
-    GD.Print($"[AgentRender] Iniciando... Agentes solicitados: {agentCount}");
-
-    if (agentCount <= 0)
+    // Inicialización única
+    public void Initialize(Rid posTexRid, Rid colTexRid, int agentCount)
     {
-        GD.PrintErr("[AgentRender] ERROR: AgentCount es 0 o negativo. Abortando.");
-        return;
-    }
+        GD.Print($"[AgentRender] Inicializando visualización para {agentCount} agentes...");
 
-    // --- 1. CARGAR SHADER CON VALIDACIÓN ---
-    string shaderPath = "res://Shaders/Visual/agent_render.gdshader"; 
-    var shader = GD.Load<Shader>(shaderPath);
+        // 1. Crear wrappers para las Texturas (RID -> Texture2D)
+        // AgentRender es dueño de estos wrappers visuales.
+        var posTexWrapper = new Texture2Drd { TextureRdRid = posTexRid };
+        var colTexWrapper = new Texture2Drd { TextureRdRid = colTexRid };
 
-    if (shader == null)
-    {
-        GD.PrintErr($"[AgentRender] FATAL: No se pudo cargar el shader en: {shaderPath}");
-        GD.PrintErr("[AgentRender] Verificá mayúsculas, extensión y que el archivo exista.");
-        return; // Salimos para no causar más daños
-    }
-    else
-    {
-        GD.Print("[AgentRender] Shader cargado correctamente.");
-    }
+        // 2. Cargar Shader
+        var shader = GD.Load<Shader>("res://Shaders/Visual/agent_render.gdshader");
+        if (shader == null)
+        {
+            GD.PrintErr("[AgentRender] CRITICAL: No se encontró el shader visual.");
+            return;
+        }
 
-    // --- 2. CREAR MATERIAL ---
-    if (_material == null) _material = new ShaderMaterial();
-    _material.Shader = shader;
-    
-    // Validar texturas (aunque sean RIDs, verificamos que no sean vacíos)
-    if (!positionTextureRid.IsValid || !colorTextureRid.IsValid)
-    {
-        GD.PrintErr("[AgentRender] ERROR: RIDs de texturas inválidos.");
-    }
+        // 3. Crear Material
+        _material = new ShaderMaterial();
+        _material.Shader = shader;
+        _material.SetShaderParameter("agent_pos_texture", posTexWrapper);
+        _material.SetShaderParameter("agent_color_texture", colTexWrapper);
+        _material.SetShaderParameter("tex_width", DATA_TEX_WIDTH);
+        _material.SetShaderParameter("agent_radius_visual", AGENT_RADIUS);
+        
+        // DEBUG: Forzar visibilidad inicial si quieres probar
+        // _material.SetShaderParameter("debug_force_visible", true); 
 
-    var posTexWrapper = new Texture2Drd { TextureRdRid = positionTextureRid };
-    var colTexWrapper = new Texture2Drd { TextureRdRid = colorTextureRid };
-
-    _material.SetShaderParameter("agent_pos_texture", posTexWrapper);
-    _material.SetShaderParameter("agent_color_texture", colTexWrapper);
-    _material.SetShaderParameter("tex_width", 2048.0f); 
-    _material.SetShaderParameter("agent_radius", 1.0f); 
-
-    // --- 3. CONFIGURAR MULTIMESH ---
-    if (Multimesh == null)
-    {
-        Multimesh = new MultiMesh();
-        Multimesh.TransformFormat = MultiMesh.TransformFormatEnum.Transform3D;
-        Multimesh.UseColors = false;
-        Multimesh.InstanceCount = agentCount;
-        Multimesh.Mesh = new QuadMesh { 
-            Size = new Vector2(2.0f, 2.0f),
-            Orientation = QuadMesh.OrientationEnum.Z // Importante
+        // 4. Configurar MultiMesh (NOSOTROS SOMOS LA INSTANCIA)
+        this.Multimesh = new MultiMesh
+        {
+            TransformFormat = MultiMesh.TransformFormatEnum.Transform3D,
+            UseColors = false,
+            InstanceCount = agentCount,
+            Mesh = new QuadMesh 
+            { 
+                Size = new Vector2(1.0f, 1.0f),
+                Orientation = QuadMesh.OrientationEnum.Z 
+            },
+            // AABB Gigante para evitar que Godot deje de dibujar si miras de reojo
+            CustomAabb = new Aabb(new Vector3(-50000, -50000, -50000), new Vector3(100000, 100000, 100000))
         };
-        GD.Print("[AgentRender] MultiMesh creado y asignado.");
+        
+        // Inicializar transforms a Identity para evitar problemas de "MultiMesh vacío"
+        for(int i=0; i < agentCount; i++) {
+            this.Multimesh.SetInstanceTransform(i, Transform3D.Identity);
+        }
+
+        this.MaterialOverride = _material;
+        
+        // CRÍTICO: Asegurar que se dibuje sombras y geometría
+        this.CastShadow = ShadowCastingSetting.On;
+        this.VisibilityRangeEnd = 5000.0f; // Distancia de visión
+
+        GD.Print("[AgentRender] Visualización Configurada OK.");
     }
 
-    // --- 4. ASIGNACIÓN FINAL ---
-    this.MaterialOverride = _material;
     
-    // Verificación final
-    if (this.MaterialOverride != null)
-        GD.Print("[AgentRender] ÉXITO: MaterialOverride asignado.");
-    else
-        GD.PrintErr("[AgentRender] ERROR: Falló la asignación de MaterialOverride.");
-
-    // AABB
-    this.CustomAabb = new Aabb(new Vector3(-50000, -50000, -50000), new Vector3(100000, 100000, 100000));
-}
-
-
 }

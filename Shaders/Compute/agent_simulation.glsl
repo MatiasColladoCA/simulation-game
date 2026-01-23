@@ -100,140 +100,165 @@ void phase_populate() {
     atomicAdd(density_grid[grid_idx], 1);
 }
 
+// Añade esta función auxiliar para debug
+float get_height_debug(vec3 normal_dir) {
+    float h = textureLod(height_map, normal_dir, 0.0).r;
+    
+    // DEBUG: Imprime valores (activa debug en RenderDoc)
+    // if (gl_GlobalInvocationID.x == 0) {
+    //     printf("Heightmap value: %f, Expected range: 0.0-1.0", h);
+    // }
+    
+    return h;
+}
+
+// Generador de números pseudo-aleatorios rápido (Hash)
+float hash12(vec2 p) {
+    vec3 p3  = fract(vec3(p.xyx) * .1031);
+    p3 += dot(p3, p3.yzx + 33.33);
+    return fract((p3.x + p3.y) * p3.z);
+}
+
+// Ruido 1D suave para el cambio de dirección (Wander)
+float noise1(float t) {
+    float i = floor(t);
+    float f = fract(t);
+    f = f * f * (3.0 - 2.0 * f); // Smoothstep
+    return mix(hash12(vec2(i, 0.0)), hash12(vec2(i + 1.0, 0.0)), f);
+}
+
 // --- FASE 2: UPDATE SIMULATION (CRÍTICA) ---
+// --- FASE 2: UPDATE SIMULATION (MOVIMIENTO ORGÁNICO AAA) ---
 void phase_update() {
     uint idx = gl_GlobalInvocationID.x;
-    if (idx >= params.custom_param) return; // custom_param = MaxAgents
+    if (idx >= params.custom_param) return;
     
     AgentDataSphere me = agents[idx];
 
-    // 1. GESTIÓN DE VIDA (Salida rápida)
-    if (me.color.w <= 0.001) {
-        // Escribir ceros en las texturas visuales para que desaparezca
-        int tex_w = int(params.tex_width);
-        ivec2 coord_tex = ivec2(int(idx) % tex_w, int(idx) / tex_w);
-        imageStore(pos_texture, coord_tex, vec4(0));
-        imageStore(col_texture, coord_tex, vec4(0));
-        return; 
-    }
-
-    // 2. LÓGICA DE MUERTE
-    bool should_die = false;
-    // Ejemplo: Murió por salir demasiado lejos (3 veces el radio)
-    if (length(me.position.xyz) > params.planet_radius * 3.0) should_die = true;
-    
-    if (should_die) {
-        me.color.w = 0.0;     // Marcar muerto
-        me.position = vec4(0.0); // Resetear posición para evitar artefactos
+    // --- 1. SPAWN / RECOVERY (Si está muerto o perdido, respawnear) ---
+    // Usamos la lógica de Fibonacci que ya funcionó para spawnear
+    if (me.color.w <= 0.001 || length(me.position.xyz) < 1.0) {
+        float i = float(idx);
+        float n = float(params.custom_param);
+        float phi = acos(1.0 - 2.0 * (i + 0.5) / n);
+        float theta = 3.14159265 * (1.0 + sqrt(5.0)) * i;
+        vec3 n_dir = vec3(sin(phi)*cos(theta), sin(phi)*sin(theta), cos(phi));
         
-        // RECICLAR: Devolver ID al Stack
-        uint stack_idx = atomicAdd(counters[1], 1);
-        
-        // Safety check: no escribir fuera del buffer de muertos
-        if (stack_idx < params.custom_param) {
-            free_indices[stack_idx] = idx;
-        }
-        
-        agents[idx] = me; // Guardar estado de muerte
+        float h = textureLod(height_map, n_dir, 0.0).r;
+        me.position.xyz = n_dir * (params.planet_radius + h);
+        me.position.w = hash12(vec2(float(idx), params.time)) * 5.0; // Timer aleatorio
+        me.color = vec4(1.0); 
+        me.velocity = vec4(0.0); // W=0 (Idle)
+        agents[idx] = me;
         return;
     }
 
-    // 3. COMPORTAMIENTO (TIMERS)
-    me.position.w -= params.delta; // state_timer
+    // --- 2. MÁQUINA DE ESTADOS (Cerebro) ---
+    // me.velocity.w almacena el estado: 0.0 = IDLE, 1.0 = WALKING
+    // me.position.w almacena el timer: Cuenta regresiva para cambiar de estado
+    
+    me.position.w -= params.delta;
+
     if (me.position.w <= 0.0) {
-        // Cambiar estado aleatoriamente o cíclicamente
-        me.velocity.w = (me.velocity.w > 0.5) ? STATE_IDLE : STATE_MOVING;
-        // Reiniciar timer con algo de aleatoriedad basada en el índice
-        me.position.w = 2.0 + (fract(sin(float(idx) * 12.9898) * 43758.5453) * 5.0);
+        // ¡CAMBIO DE ESTADO!
+        if (me.velocity.w < 0.5) {
+            // Estaba IDLE -> Pasa a WALK
+            me.velocity.w = 1.0; 
+            // Camina entre 2 y 8 segundos
+            me.position.w = 2.0 + hash12(vec2(float(idx), params.time)) * 6.0; 
+        } else {
+            // Estaba WALK -> Pasa a IDLE
+            me.velocity.w = 0.0;
+            // Descansa entre 1 y 3 segundos
+            me.position.w = 1.0 + hash12(vec2(float(idx), params.time + 10.0)) * 2.0;
+        }
     }
 
-    // 4. MOVIMIENTO
-    float is_moving = step(0.5, me.velocity.w);
+    // --- 3. FÍSICA DE MOVIMIENTO ---
     vec3 current_pos = me.position.xyz;
-    
-    // Safety: Evitar normalizar vector cero
-    vec3 current_normal = vec3(0, 1, 0);
-    if (length(current_pos) > 0.001) current_normal = normalize(current_pos);
+    vec3 up = normalize(current_pos); // Normal de la esfera en mi posición
 
-    if (is_moving > 0.5) {
-        // A. Vector Field (Flujo global)
-        vec3 static_flow = textureLod(vector_field, current_normal, 0.0).rgb;
-        // Proyectar sobre la tangente para que no apunte hacia el cielo/suelo
-        static_flow -= dot(static_flow, current_normal) * current_normal; 
-
-        // B. Influencia POI (Gradiente local de la textura 3D)
-        ivec3 g_coord = get_grid_coord(current_pos);
+    if (me.velocity.w > 0.5) { // ESTADO: WALK
         
-        // Clamp para no leer fuera de la textura 3D
-        ivec3 size_3d = imageSize(density_texture_out);
-        ivec3 c = clamp(g_coord, ivec3(0), size_3d - ivec3(1));
-        ivec3 cx = clamp(g_coord + ivec3(1, 0, 0), ivec3(0), size_3d - ivec3(1));
-        ivec3 cy = clamp(g_coord + ivec3(0, 1, 0), ivec3(0), size_3d - ivec3(1));
-        ivec3 cz = clamp(g_coord + ivec3(0, 0, 1), ivec3(0), size_3d - ivec3(1));
+        // A. WANDER (Deambular)
+        // Usamos el ID del agente y el tiempo para generar un ángulo "único" que cambia suavemente
+        float wander_noise = noise1(params.time * 0.5 + float(idx) * 0.1); // Ruido lento
+        float angle = wander_noise * 6.2831; // 0 a 360 grados
 
-        // Lectura
-        float val_c = imageLoad(density_texture_out, c).r;
-        float val_x = imageLoad(density_texture_out, cx).r;
-        float val_y = imageLoad(density_texture_out, cy).r;
-        float val_z = imageLoad(density_texture_out, cz).r;
-
-        // Gradiente: Hacia donde aumenta el valor (atracción)
-        vec3 poi_grad = vec3(val_x - val_c, val_y - val_c, val_z - val_c);
-        vec3 poi_dir = vec3(0.0);
-        if (length(poi_grad) > 0.0001) poi_dir = normalize(poi_grad);
+        // Construimos un vector tangente a la superficie
+        vec3 arbitrary = (abs(up.y) < 0.9) ? vec3(0,1,0) : vec3(1,0,0);
+        vec3 tangent = normalize(cross(up, arbitrary));
+        vec3 bitangent = cross(up, tangent);
         
-        // C. Mezcla de Fuerzas
-        // 40% Flujo del planeta, 60% Atracción a POIs
-        vec3 final_dir = normalize(static_flow * 0.4 + poi_dir * 0.6);
-        
-        // Si no hay fuerza (ej. en medio de la nada), mantener inercia
-        if (length(final_dir) < 0.001) final_dir = normalize(me.velocity.xyz + vec3(0.001));
+        // Dirección de "paseo" en espacio tangente
+        vec3 wander_dir = normalize(tangent * cos(angle) + bitangent * sin(angle));
 
-        // Física simple (Aceleración)
-        float speed = 40.0;
-        vec3 target_vel = final_dir * speed; 
-        vec3 acc = (target_vel - me.velocity.xyz) * 4.0; // Amortiguación
+        // B. VECTOR FIELD (Influencia Ambiental)
+        // Leemos el mapa de flujo, pero no lo obedecemos ciegamente
+        vec3 flow = textureLod(vector_field, up, 0.0).rgb;
+        flow -= dot(flow, up) * up; // Proyectar al suelo
+        if (length(flow) > 0.01) flow = normalize(flow);
+
+        // C. DENSITY AVOIDANCE (Evitar multitudes)
+        // Miramos "hacia adelante"
+        ivec3 grid_coord = get_grid_coord(current_pos + wander_dir * 2.0);
+        float density_ahead = read_density(grid_coord);
+        vec3 avoidance = vec3(0.0);
+        
+        if (density_ahead > 3.0) { // Si hay más de 3 vecinos adelante
+            // Fuerza repulsiva hacia atrás o al costado
+             avoidance = -wander_dir * 2.0; 
+        }
+
+        // --- MEZCLA DE FUERZAS (LA RECETA MÁGICA) ---
+        // 60% Voluntad propia (Wander), 30% Terreno (Flow), 100% Repulsión si aplica
+        vec3 target_dir = normalize(wander_dir * 0.6 + flow * 0.3 + avoidance);
+
+        // Aceleración
+        vec3 target_vel = target_dir * 15.0; // Velocidad de caminata (ajustar a gusto)
+        vec3 acc = (target_vel - me.velocity.xyz) * 4.0; // Inercia/Agilidad
         
         me.velocity.xyz += acc * params.delta;
-        me.position.xyz += me.velocity.xyz * params.delta;
-    } else {
-        // Fricción en estado IDLE
-        me.velocity.xyz *= 0.9; 
+
+    } else { // ESTADO: IDLE
+        // Fricción rápida para detenerse
+        me.velocity.xyz = mix(me.velocity.xyz, vec3(0.0), params.delta * 5.0);
     }
 
-    // 5. SNAPPING (Pegar al suelo)
-    // Recalcular normal tras movimiento
-    vec3 next_normal = vec3(0, 1, 0);
-    if (length(me.position.xyz) > 0.001) next_normal = normalize(me.position.xyz);
+    // Aplicar Velocidad
+    me.position.xyz += me.velocity.xyz * params.delta;
+
+    // --- 4. SNAPPING AL TERRENO (CRÍTICO) ---
+    // Mantenemos tu lógica corregida para leer la altura real
+    vec3 next_normal = normalize(me.position.xyz);
+    float h = textureLod(height_map, next_normal, 0.0).r; // h ya tiene escala en tu baker
     
-    // Leer altura del terreno
-    float h = textureLod(height_map, next_normal, 0.0).r;
-    float final_r = params.planet_radius + (h * params.noise_height);
-    
-    // Interpolación suave de altura (Lerp) para evitar "teletransportes" en pendientes
+    // Suavizado para que no "tiemble" al subir montañas
+    float target_r = params.planet_radius + h;
     float current_r = length(me.position.xyz);
-    float lerped_r = mix(current_r, final_r, params.delta * 10.0);
     
-    me.position.xyz = next_normal * lerped_r;
+    // Lerp agresivo para mantenerse pegado (20.0)
+    float new_r = mix(current_r, target_r, params.delta * 20.0);
+    me.position.xyz = next_normal * new_r;
 
-    // 6. COLOR POR DENSIDAD (Visualización de grupos)
-    ivec3 g_coord_final = get_grid_coord(me.position.xyz);
-    float d = read_density(g_coord_final);
+    // --- 5. VISUALIZACIÓN ---
+    // Color Debug: Blanco si camina, Gris si espera
+    float state_color = me.velocity.w > 0.5 ? 1.0 : 0.5;
+    me.color.rgb = vec3(state_color); 
     
-    // Si la densidad es alta (>5 vecinos), tinte rojo. Si no, blanco.
-    vec3 target_col = (d > 5.0) ? vec3(1.0, 0.2, 0.2) : vec3(1.0);
-    me.color.rgb = mix(me.color.rgb, target_col, params.delta * 2.0); // Lerp suave de color
+    // Tinte rojo si hay mucha densidad (Crowding debug)
+    ivec3 g_coord = get_grid_coord(me.position.xyz);
+    if (read_density(g_coord) > 5.0) me.color.rgb = mix(me.color.rgb, vec3(1,0,0), 0.5);
 
-    // 7. GUARDADO FINAL
+    // Guardar
     agents[idx] = me;
-
-    // Actualizar Texturas para el Visual Shader
+    
+    // Salida a Textura
     int tex_w = int(params.tex_width);
     ivec2 coord_tex = ivec2(int(idx) % tex_w, int(idx) / tex_w);
     imageStore(pos_texture, coord_tex, me.position);
     imageStore(col_texture, coord_tex, me.color);
 }
-
 // --- FASE 3: PAINT POIS ---
 void phase_paint_pois() {
     // Invocado en volumen 3D (GridRes x GridRes x GridRes)
