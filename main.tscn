@@ -1,8 +1,9 @@
-[gd_scene load_steps=16 format=3 uid="uid://bbr5o4fhtiijr"]
+[gd_scene load_steps=18 format=3 uid="uid://bbr5o4fhtiijr"]
 
 [ext_resource type="Script" uid="uid://cj0wls38ooum3" path="res://Scripts/Main.cs" id="1_4c57u"]
 [ext_resource type="Script" uid="uid://7k5lvwfwfhde" path="res://Scripts/Cameras/OrbitalCamera.cs" id="3_lquwl"]
 [ext_resource type="Script" uid="uid://1pjncvuov0ns" path="res://Scripts/Agents/AgentSystem.cs" id="4_272bh"]
+[ext_resource type="Script" uid="uid://deivds8w7hmu0" path="res://Scripts/Data/SimulationConfig.cs" id="4_dg77c"]
 [ext_resource type="PackedScene" uid="uid://xqf0drumhvq8" path="res://Scenes/Prefabs/Planet.tscn" id="4_efxa6"]
 [ext_resource type="RDShaderFile" uid="uid://ca6tret02iis" path="res://Shaders/Compute/agent_simulation.glsl" id="5_4c57u"]
 [ext_resource type="Script" uid="uid://qpiji7gd2eyk" path="res://Scripts/UI/SimulationUI.cs" id="6_kek77"]
@@ -12,6 +13,10 @@
 [ext_resource type="PackedScene" uid="uid://dtj8mcnxoandt" path="res://PoiVisual.tscn" id="10_4c57u"]
 
 [sub_resource type="PackedScene" id="PackedScene_efxa6"]
+
+[sub_resource type="Resource" id="Resource_ycdy4"]
+script = ExtResource("4_dg77c")
+metadata/_custom_type_script = "uid://deivds8w7hmu0"
 
 [sub_resource type="SphereMesh" id="SphereMesh_efxa6"]
 radius = 100.0
@@ -40,7 +45,7 @@ UI = NodePath("CanvasLayer")
 PlanetPrefab = ExtResource("4_efxa6")
 PoiMeshPrefab = SubResource("PackedScene_efxa6")
 PoiVisualPrefab = ExtResource("10_4c57u")
-GlobalHumidity = 0.789
+Config = SubResource("Resource_ycdy4")
 
 [node name="MeshInstance3D2" type="MeshInstance3D" parent="."]
 transform = Transform3D(1, 0, 0, 0, 1, 0, 0, 0, 1, 100, 0, 0)

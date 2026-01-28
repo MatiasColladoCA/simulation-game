@@ -16,24 +16,29 @@ public partial class Main : Node
 	[Export] public PackedScene PoiMeshPrefab; // Se pasará al Planet
 	[Export] public PackedScene PoiVisualPrefab; // Si tienes uno visual distinto
 
-	// --- CONFIGURACIÓN DE SIMULACIÓN (INPUTS) ---
-	[ExportGroup("Simulation Settings")]
-	[Export] public int WorldSeed = 1111;
-	[Export] public bool RandomizeSeed = true;
+	// // --- CONFIGURACIÓN DE SIMULACIÓN (INPUTS) ---
+	// [ExportGroup("Simulation Settings")]
+	// [Export] public int WorldSeed = 1111;
+	// [Export] public bool RandomizeSeed = true;
 
-	[ExportGroup("Simulation DNA")]
-	[Export(PropertyHint.Range, "0,1")] public float GlobalHumidity = 0.5f;
-	[Export(PropertyHint.Range, "0,1")] public float GlobalTemperature = 0.5f;
+	// [ExportGroup("Simulation DNA")]
+	// [Export(PropertyHint.Range, "0,1")] public float GlobalHumidity = 0.5f;
+	// [Export(PropertyHint.Range, "0,1")] public float GlobalTemperature = 0.5f;
 
-	[ExportGroup("Noise Fine Tuning")]
-	[Export] public float WarpStrength = 0.15f;
-	[Export] public float DetailFrequency = 4.0f;
-	[Export] public float RidgeSharpness = 2.5f;
-	[Export(PropertyHint.Range, "0,1")] public float MaskStart = 0.6f;
-	[Export(PropertyHint.Range, "0,1")] public float MaskEnd = 0.75f;
+	// [ExportGroup("Noise Fine Tuning")]
+	// [Export] public float WarpStrength = 0.15f;
+	// [Export] public float DetailFrequency = 4.0f;
+	// [Export] public float RidgeSharpness = 2.5f;
+	// [Export(PropertyHint.Range, "0,1")] public float MaskStart = 0.6f;
+	// [Export(PropertyHint.Range, "0,1")] public float MaskEnd = 0.75f;
 
-	[ExportGroup("Simulation Grid")]
-	[Export(PropertyHint.Range, "32,128")] public int GridResolution = 64; // Resolución de la grilla 3D de influencia
+	// [ExportGroup("Simulation Grid")]
+	// [Export(PropertyHint.Range, "32,128")] public int GridResolution = 64; // Resolución de la grilla 3D de influencia
+
+
+	[Export] public SimulationConfig Config;
+
+	private InputManager _inputManager;
 
 	// --- VARIABLES INTERNAS ---
 	private RenderingDevice _rd;
@@ -61,6 +66,15 @@ public partial class Main : Node
 			GetTree().Quit();
 			return;
 		}
+
+		// SETUP INPUT
+		_inputManager = new InputManager();
+		AddChild(_inputManager); // Lo agregamos al árbol para que reciba inputs
+		
+		// SUSCRIPCIONES (Wiring)
+		_inputManager.OnToggleConsole += ToggleConsole;
+		_inputManager.OnResetSimulation += SpawnWorld;
+		_inputManager.OnSpawnAgentRequest += SpawnAgentAtMouse;
 		
 		// 2. Init Herramientas Compartidas (Flyweight Pattern)
 		// Cargamos el shader una sola vez para todo el juego
@@ -84,12 +98,12 @@ public partial class Main : Node
 		}
 
 		// B. Configuración
-		if (RandomizeSeed) WorldSeed = (int)DateTime.Now.Ticks;
+		if (Config.RandomizeSeed) Config.WorldSeed = (int)DateTime.Now.Ticks;
 
 		// --- FASE 3: Instanciación del Mundo ---
 		// REEMPLAZADO: planetNode = SetupPlanet(WorldSeed); 
 		// REEMPLAZADO: if (!success) { ... }
-		var newPlanet = SetupPlanet(WorldSeed);
+		var newPlanet = SetupPlanet(Config.WorldSeed);
 		
 		if (newPlanet == null)
 		{
@@ -125,7 +139,7 @@ public partial class Main : Node
 		// 3. Inicializar Lógica
 		// REEMPLAZADO: bool success = planetNode.Initialize(_rd, planetConfig, _sharedPoiPainter, GridResolution);
 		// REEMPLAZADO: (No retornaba nada)
-		bool success = planetNode.Initialize(_rd, planetConfig, _sharedPoiPainter, GridResolution);
+		bool success = planetNode.Initialize(_rd, planetConfig, _sharedPoiPainter, Config.GridResolution);
 
 		if (!success)
 		{
@@ -151,7 +165,7 @@ public partial class Main : Node
 		
 		
 		// --- INICIALIZACIÓN DE CÓMPUTO ---
-		AgentCompute.Initialize(_rd, planet, env, planet.GetParams(), GridResolution);
+		AgentCompute.Initialize(_rd, planet, env, planet.GetParams(), Config.GridResolution);
 		
 		if (!AgentCompute.IsInitialized) {
 			GD.PrintErr("[Main] CRÍTICO: AgentSystem falló al inicializar.");
@@ -304,7 +318,7 @@ public partial class Main : Node
 			// Ruido
 			NoiseScale = 1.5f,
 			NoiseHeight = 70.0f,
-			WarpStrength = this.WarpStrength,
+			WarpStrength = Config.WarpStrength,
 			MountainRoughness = 2.0f,
 			
 			// Curva
@@ -316,10 +330,10 @@ public partial class Main : Node
 			NoiseOffset = new Vector3(rng.Randf(), rng.Randf(), rng.Randf()) * 10000.0f,
 			
 			// Detalle
-			DetailFrequency = this.DetailFrequency,
-			RidgeSharpness = this.RidgeSharpness,
-			MaskStart = this.MaskStart,
-			MaskEnd = this.MaskEnd,
+			DetailFrequency = Config.DetailFrequency,
+			RidgeSharpness = Config.RidgeSharpness,
+			MaskStart = Config.MaskStart,
+			MaskEnd = Config.MaskEnd,
 			GroundDetailFreq = 4.0f
 		};
 	}
