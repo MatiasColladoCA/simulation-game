@@ -9,6 +9,10 @@ public partial class Planet : Node3D
 	// --- ESTADO DEL MUNDO ---
 	private PlanetParamsData _params;
 	private RenderingDevice _rd;
+
+	private PoiPainter _sharedPainter; // Guardamos referencia
+	private int _gridResolution;
+	private bool _isConfigured = false; // Flag de seguridad
 	
 	// RIDs que el planeta "posee" y expone al exterior
 	public Rid _heightMapRid;
@@ -56,62 +60,189 @@ public partial class Planet : Node3D
 
 
 
-	public override void _Ready()
-	{
-		// Instanciación del Baker (Obrero temporal)
-		_terrainBaker = new PlanetBaker();
-		_terrainBaker.Name = "Internal_Baker";
-		AddChild(_terrainBaker);
-
-	}
+	
 
 	// --- PUNTO DE ENTRADA ---
 	public bool Initialize(RenderingDevice rd, PlanetParamsData config, PoiPainter sharedPainter, int gridResolution)
 	{
 		_rd = rd;
-		
-		// 1. VALIDACIÓN
 		_params = ValidateConfig(config);
-
-		// 2. GENERACIÓN DEL TERRENO (BAKE)
-		// Configuramos al obrero
-		_terrainBaker.BakerShaderFile = this.BakerShader;
-		_terrainBaker.SetParams(_params);
+		_sharedPainter = sharedPainter;
+		_gridResolution = gridResolution;
 		
-		// ¡A trabajar!
-		var bakeResult = _terrainBaker.Bake(_rd);
+		_isConfigured = true;
 
-		// if (!bakeResult.Success)
+		return true;
+
+		// // --- CORRECCIÓN: Asegurar que el Baker existe AQUÍ y AHORA ---
+		// if (_terrainBaker == null)
 		// {
-		// 	GD.PrintErr($"[Planet] Falló la generación del terreno.");
-		// 	return false;
+		// 	_terrainBaker = new PlanetBaker();
+		// 	_terrainBaker.Name = "Internal_Baker";
+		// 	// Es seguro hacer AddChild aunque el planeta no esté en la escena principal aún.
+		// 	// Simplemente se agrega a la jerarquía local del planeta.
+		// 	AddChild(_terrainBaker); 
+		// }
+		
+		// // 1. VALIDACIÓN
+		// _params = ValidateConfig(config);
+
+		// // 2. GENERACIÓN DEL TERRENO (BAKE)
+		// // Configuramos al obrero
+		// _terrainBaker.BakerShaderFile = this.BakerShader;
+		// _terrainBaker.SetParams(_params);
+		
+		// // ¡A trabajar!
+		// var bakeResult = _terrainBaker.Bake(_rd);
+
+		// // if (!bakeResult.Success)
+		// // {
+		// // 	GD.PrintErr($"[Planet] Falló la generación del terreno.");
+		// // 	return false;
+		// // }
+		// // else
+		// // {
+		// // 	GD.Print($"[Planet] Generación del terreno exitosa.");
+		// // }
+
+		// // 3. CAPTURA DE RESULTADOS
+		// // El planeta toma posesión de las texturas generadas
+		// _heightMapRid = bakeResult.HeightMapRid;
+		// _normalMapRid = bakeResult.NormalMapRid;
+		// _vectorFieldRid = bakeResult.VectorFieldRid;
+
+		// _minHeightCache = bakeResult.MinHeight;
+		// _maxHeightCache = bakeResult.MaxHeight;
+
+		// // // 4. ACTUALIZAR VISUALES (Shader de Superficie)
+		// // UpdateTerrainVisuals();
+		// if (_planetMaterial == null)
+		// {
+		// 	// _planetMaterial = new ShaderMaterial();
+		// 	// _planetMaterial.Shader = GD.Load<Shader>("res://Shaders/Visual/planet_terrain.gdshader");
+		// 	GD.PrintErr("[Planet] Falta terrain material");
+
+		// }else
+		// {
+		// 	GD.Print("[planet] El material se está asignando.");
+
+		// 	Renderer._planetMaterial = _planetMaterial;
+		// }
+
+		// if (Renderer != null)
+		// {
+		// 	Renderer.Initialize(
+		// 		_heightMapRid,
+		// 		_vectorFieldRid,
+		// 		_normalMapRid,
+		// 		_params.Radius,
+		// 		_minHeightCache,
+		// 		_maxHeightCache
+		// 	);
 		// }
 		// else
 		// {
-		// 	GD.Print($"[Planet] Generación del terreno exitosa.");
+		// 	GD.PrintErr("[Planet] Falta asignar el nodo 'Renderer' en el Inspector.");
 		// }
 
-		// 3. CAPTURA DE RESULTADOS
-		// El planeta toma posesión de las texturas generadas
+		// // Aquí es donde "rellenamos" el Env con los datos que generó el Baker
+		// if (Env != null)
+		// {
+		// 	GD.Print("[Planet] Inicializando Environment System...");
+			
+		// 	// Le pasamos al Environment los mapas que acabamos de cocinar
+		// 	Env.Initialize(
+		// 		_rd, 
+		// 		_heightMapRid,   // Para que sepa la altura del terreno
+		// 		_vectorFieldRid, // Para que sepa las corrientes de viento/flujo
+		// 		_params,         // Radio, semilla, etc.
+		// 		gridResolution   // Resolución de la grilla 3D
+		// 	);
+			
+		// 	// Opcional: Si quieres generar los POIs inmediatamente
+		// 	// Env.SetupPoiBuffer(); 
+		// 	// Env.CreateVisualPOIs();
+		// }
+		// else
+		// {
+		// 	GD.PrintErr("[Planet] CRÍTICO: La variable 'Env' es null. Asigna el nodo EnvironmentManager en el Inspector de Planet.tscn");
+		// 	// Nota: No retornamos false aquí para permitir debugging visual del terreno, 
+		// 	// pero los agentes fallarán.
+		// }
+
+		// // 5. GENERAR POIS
+		// // Aquí ocurre la magia de la delegación.
+		// // No creamos buffers aquí. Solo damos la orden.
+		// // InitializePois(sharedPainter);
+
+		// return true;
+	}
+
+
+	public override void _Ready()
+	{
+		if (!_isConfigured)
+		{
+			// Si alguien pone el planeta en la escena sin usar el Builder
+			GD.PrintErr("[Planet] Error: Planeta no inicializado vía WorldBuilder.");
+			return;
+		}
+
+		// 1. Setup de Workers
+		SetupWorkers();
+
+		// 2. Heavy Lifting (GPU Bake)
+		GenerateTerrain();
+
+		// 3. Visual Setup (Renderer)
+		SetupRenderer();
+
+		// 4. Environment & POIs (Ahora es seguro usar LookAt/GlobalPos)
+		SetupEnvironment();
+
+		GD.Print("[Planet] Planeta listo y renderizado.");
+	}
+
+
+
+	// --- SUB-RUTINAS ---
+
+	private void SetupWorkers()
+	{
+		// Instanciamos el Baker si no existe
+		if (_terrainBaker == null)
+		{
+			_terrainBaker = new PlanetBaker();
+			_terrainBaker.Name = "Internal_Baker";
+			AddChild(_terrainBaker); 
+		}
+		
+		// Configuramos Baker
+		_terrainBaker.BakerShaderFile = this.BakerShader;
+		_terrainBaker.SetParams(_params);
+	}
+
+	private void GenerateTerrain()
+	{
+		// Ejecutar Compute Shader
+		var bakeResult = _terrainBaker.Bake(_rd);
+
+		// Guardar resultados
 		_heightMapRid = bakeResult.HeightMapRid;
 		_normalMapRid = bakeResult.NormalMapRid;
 		_vectorFieldRid = bakeResult.VectorFieldRid;
-
 		_minHeightCache = bakeResult.MinHeight;
 		_maxHeightCache = bakeResult.MaxHeight;
+	}
 
-		// // 4. ACTUALIZAR VISUALES (Shader de Superficie)
-		// UpdateTerrainVisuals();
+	private void SetupRenderer()
+	{
 		if (_planetMaterial == null)
 		{
-			// _planetMaterial = new ShaderMaterial();
-			// _planetMaterial.Shader = GD.Load<Shader>("res://Shaders/Visual/planet_terrain.gdshader");
 			GD.PrintErr("[Planet] Falta terrain material");
-
-		}else
+		}
+		else
 		{
-			GD.Print("[planet] El material se está asignando.");
-
 			Renderer._planetMaterial = _planetMaterial;
 		}
 
@@ -126,42 +257,32 @@ public partial class Planet : Node3D
 				_maxHeightCache
 			);
 		}
-		else
-		{
-			GD.PrintErr("[Planet] Falta asignar el nodo 'Renderer' en el Inspector.");
-		}
+	}
 
-		// Aquí es donde "rellenamos" el Env con los datos que generó el Baker
+	private void SetupEnvironment()
+	{
 		if (Env != null)
 		{
-			GD.Print("[Planet] Inicializando Environment System...");
-			
-			// Le pasamos al Environment los mapas que acabamos de cocinar
+			// Ahora esto es SEGURO porque estamos dentro de _Ready
 			Env.Initialize(
 				_rd, 
-				_heightMapRid,   // Para que sepa la altura del terreno
-				_vectorFieldRid, // Para que sepa las corrientes de viento/flujo
-				_params,         // Radio, semilla, etc.
-				gridResolution   // Resolución de la grilla 3D
+				_heightMapRid, 
+				_vectorFieldRid, 
+				_params, 
+				_gridResolution
 			);
 			
-			// Opcional: Si quieres generar los POIs inmediatamente
-			// Env.SetupPoiBuffer(); 
-			// Env.CreateVisualPOIs();
+			// Si EnvironmentManager hace spawn visual dentro de Initialize,
+			// ahora funcionará porque el Planeta ya tiene posición en el mundo.
+			// Env.CreateVisualPOIs(); // Asegúrate de llamar a esto si lo habías sacado.
 		}
 		else
 		{
-			GD.PrintErr("[Planet] CRÍTICO: La variable 'Env' es null. Asigna el nodo EnvironmentManager en el Inspector de Planet.tscn");
-			// Nota: No retornamos false aquí para permitir debugging visual del terreno, 
-			// pero los agentes fallarán.
+			GD.PrintErr("[Planet] Env es null.");
 		}
 
-		// 5. GENERAR POIS
-		// Aquí ocurre la magia de la delegación.
-		// No creamos buffers aquí. Solo damos la orden.
-		// InitializePois(sharedPainter);
-
-		return true;
+		// Si usas el PoiSystem interno:
+		// InitializePois(_sharedPainter);
 	}
 
 	// --- MÉTODOS PRIVADOS ---

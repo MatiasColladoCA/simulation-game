@@ -9,36 +9,19 @@ public partial class Main : Node
 	[Export] public AgentSystem AgentCompute;
 	[Export] public AgentRender AgentRenderer; // Corregido nombre (camelCase a PascalCase por convención C#)
 	[Export] public SimulationUI UI;
-	
-	// --- DEPENDENCIAS DE FÁBRICA ---
-	[ExportGroup("Recursos de Fábrica")]
-	[Export] public PackedScene PlanetPrefab; 
-	[Export] public PackedScene PoiMeshPrefab; // Se pasará al Planet
-	[Export] public PackedScene PoiVisualPrefab; // Si tienes uno visual distinto
-
-	// // --- CONFIGURACIÓN DE SIMULACIÓN (INPUTS) ---
-	// [ExportGroup("Simulation Settings")]
-	// [Export] public int WorldSeed = 1111;
-	// [Export] public bool RandomizeSeed = true;
-
-	// [ExportGroup("Simulation DNA")]
-	// [Export(PropertyHint.Range, "0,1")] public float GlobalHumidity = 0.5f;
-	// [Export(PropertyHint.Range, "0,1")] public float GlobalTemperature = 0.5f;
-
-	// [ExportGroup("Noise Fine Tuning")]
-	// [Export] public float WarpStrength = 0.15f;
-	// [Export] public float DetailFrequency = 4.0f;
-	// [Export] public float RidgeSharpness = 2.5f;
-	// [Export(PropertyHint.Range, "0,1")] public float MaskStart = 0.6f;
-	// [Export(PropertyHint.Range, "0,1")] public float MaskEnd = 0.75f;
-
-	// [ExportGroup("Simulation Grid")]
-	// [Export(PropertyHint.Range, "32,128")] public int GridResolution = 64; // Resolución de la grilla 3D de influencia
-
 
 	[Export] public SimulationConfig Config;
 
 	private InputManager _inputManager;
+
+	[ExportGroup("Architecture")]
+	[Export] public WorldBuilder WorldFactory;
+
+
+
+
+
+
 
 	// --- VARIABLES INTERNAS ---
 	private RenderingDevice _rd;
@@ -87,6 +70,18 @@ public partial class Main : Node
 
 	private void SpawnWorld()
 	{
+		// --- VALIDACIONES DE SEGURIDAD (NUEVO) ---
+		if (WorldFactory == null)
+		{
+			GD.PrintErr("[Main] CRÍTICO: No has asignado el 'WorldFactory' en el Inspector de Main.");
+			return;
+		}
+		if (Config == null)
+		{
+			GD.PrintErr("[Main] CRÍTICO: No has asignado el 'Config' (SimulationConfig) en el Inspector de Main.");
+			return;
+		}
+
 		_isRunning = false; // Pausa simulación mientras carga
 
 		// A. Limpieza anterior si existe
@@ -103,8 +98,9 @@ public partial class Main : Node
 		// --- FASE 3: Instanciación del Mundo ---
 		// REEMPLAZADO: planetNode = SetupPlanet(WorldSeed); 
 		// REEMPLAZADO: if (!success) { ... }
-		var newPlanet = SetupPlanet(Config.WorldSeed);
-		
+		// var newPlanet = SetupPlanet(Config.WorldSeed);
+		var newPlanet = WorldFactory.BuildWorld(_rd, Config, _sharedPoiPainter);
+
 		if (newPlanet == null)
 		{
 			GD.PrintErr("[Main] Falló la inicialización del planeta. Abortando.");
@@ -112,6 +108,7 @@ public partial class Main : Node
 		}
 
 		_activePlanet = newPlanet; // Asignación de estado
+		AddChild(_activePlanet);
 
 		// --- FASE 4: Inyección a Sistemas ---
 		SetupAgents(_activePlanet);
@@ -127,14 +124,14 @@ public partial class Main : Node
 		int planetSeed = HashCode.Combine(currentSeed, _planetIndex++);
 		
 		// Asumo que este método existe o es generado localmente
-		var planetConfig = GeneratePlanetConfig(planetSeed); 
+		var planetConfig = WorldFactory.GeneratePlanetConfig(Config, planetSeed); 
 
 		// 1. Instanciar
-		var planetNode = PlanetPrefab.Instantiate<Planet>();
+		var planetNode = WorldFactory.PlanetPrefab.Instantiate<Planet>();
 		AddChild(planetNode);
 		
 		// 2. Inyectar dependencias visuales
-		planetNode.PoiVisualScene = PoiVisualPrefab ?? PoiMeshPrefab;
+		planetNode.PoiVisualScene = WorldFactory.PoiVisualPrefab ?? WorldFactory.PoiMeshPrefab;
 
 		// 3. Inicializar Lógica
 		// REEMPLAZADO: bool success = planetNode.Initialize(_rd, planetConfig, _sharedPoiPainter, GridResolution);
@@ -228,24 +225,6 @@ public partial class Main : Node
 		}
 	}
 
-	public override void _UnhandledInput(InputEvent @event)
-	{
-		if (@event.IsActionPressed("toggle_console")) ToggleConsole();
-
-		if (_activePlanet != null && @event is InputEventMouseButton mb && mb.Pressed && mb.ButtonIndex == MouseButton.Left)
-		{
-			if (Input.IsKeyPressed(Key.Ctrl))
-			{
-				SpawnAgentAtMouse(mb.Position);
-			}
-		}
-		
-		// Reset rápido para debug
-		if (@event is InputEventKey k && k.Pressed && k.Keycode == Key.R)
-		{
-			SpawnWorld();
-		}
-	}
 
 	private void SpawnAgentAtMouse(Vector2 mousePos)
 	{
@@ -303,40 +282,40 @@ public partial class Main : Node
 	}
 
 
-		private PlanetParamsData GeneratePlanetConfig(int seed)
-	{
-		// Construir struct basado en los sliders del Inspector
-		var rng = new RandomNumberGenerator();
-		rng.Seed = (ulong)seed;
+	// 	private PlanetParamsData GeneratePlanetConfig(int seed)
+	// {
+	// 	// Construir struct basado en los sliders del Inspector
+	// 	var rng = new RandomNumberGenerator();
+	// 	rng.Seed = (ulong)seed;
 
-		return new PlanetParamsData
-		{
-			PlanetSeed = seed,
-			Radius = 1000.0f, // O usa un export
-			ResolutionF = 1024.0f,
+	// 	return new PlanetParamsData
+	// 	{
+	// 		PlanetSeed = seed,
+	// 		Radius = 1000.0f, // O usa un export
+	// 		ResolutionF = 1024.0f,
 			
-			// Ruido
-			NoiseScale = 1.5f,
-			NoiseHeight = 70.0f,
-			WarpStrength = Config.WarpStrength,
-			MountainRoughness = 2.0f,
+	// 		// Ruido
+	// 		NoiseScale = 1.5f,
+	// 		NoiseHeight = 70.0f,
+	// 		WarpStrength = Config.WarpStrength,
+	// 		MountainRoughness = 2.0f,
 			
-			// Curva
-			OceanFloorLevel = 0.0f,
-			WeightMultiplier = 2.5f,
-			// Amplitude = 100.0f, // Altura máxima
+	// 		// Curva
+	// 		OceanFloorLevel = 0.0f,
+	// 		WeightMultiplier = 2.5f,
+	// 		// Amplitude = 100.0f, // Altura máxima
 			
-			// Offset Aleatorio
-			NoiseOffset = new Vector3(rng.Randf(), rng.Randf(), rng.Randf()) * 10000.0f,
+	// 		// Offset Aleatorio
+	// 		NoiseOffset = new Vector3(rng.Randf(), rng.Randf(), rng.Randf()) * 10000.0f,
 			
-			// Detalle
-			DetailFrequency = Config.DetailFrequency,
-			RidgeSharpness = Config.RidgeSharpness,
-			MaskStart = Config.MaskStart,
-			MaskEnd = Config.MaskEnd,
-			GroundDetailFreq = 4.0f
-		};
-	}
+	// 		// Detalle
+	// 		DetailFrequency = Config.DetailFrequency,
+	// 		RidgeSharpness = Config.RidgeSharpness,
+	// 		MaskStart = Config.MaskStart,
+	// 		MaskEnd = Config.MaskEnd,
+	// 		GroundDetailFreq = 4.0f
+	// 	};
+	// }
 
 
 
@@ -396,44 +375,6 @@ public partial class Main : Node
 
 
 
-
-// 	// --- TECLAS Y MOUSE ---
-
-// 	public override void _UnhandledInput(InputEvent @event)
-// 	{
-// 	    // Toggle de Consola
-// 	    if (@event.IsActionPressed("toggle_console"))
-// 	    {
-// 	        ToggleConsole();
-// 	        GetViewport().SetInputAsHandled();
-// 	        return;
-// 	    }
-
-// 	    // Hotkeys de Debug
-// 	    if (@event is InputEventKey keyEvent && keyEvent.Pressed)
-// 	    {
-// 	        // Debug de texturas visuales (Opcional, si PlanetRender soporta debug view)
-// 	        if (keyEvent.Keycode == Key.F)
-// 	        {
-// 	            // Ejemplo: _activePlanet?.ToggleVectorFieldDebug();
-// 	            GD.Print("[Debug] Vector Field Toggle (Not implemented yet)");
-// 	        }
-// 	        else if (keyEvent.Keycode == Key.R)
-// 	        {
-// 	            GD.Print("[Main] Regenerando mundo...");
-// 	            SpawnWorld();
-// 	        }
-// 	    }
-
-// 	    // Spawn de Agentes con Mouse
-// 	    if (@event is InputEventMouseButton mouseEvent && mouseEvent.Pressed && mouseEvent.ButtonIndex == MouseButton.Left)
-// 	    {
-// 	        if (Input.IsKeyPressed(Key.Ctrl))
-// 	        {
-// 	            SpawnAgentAtMouse(mouseEvent.Position);
-// 	        }
-// 	    }
-// 	}
 
 // 	private void SpawnAgentAtMouse(Vector2 mousePos)
 // 	{
@@ -503,6 +444,8 @@ public partial class Main : Node
 
 
 	// --- LIMPIEZA FINAL ---
+
+
 	public override void _ExitTree()
 	{
 		_sharedPoiPainter?.Dispose();
