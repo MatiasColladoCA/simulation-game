@@ -1,4 +1,4 @@
-[gd_scene load_steps=18 format=3 uid="uid://bbr5o4fhtiijr"]
+[gd_scene load_steps=19 format=3 uid="uid://bbr5o4fhtiijr"]
 
 [ext_resource type="Script" uid="uid://cj0wls38ooum3" path="res://Scripts/Main.cs" id="1_4c57u"]
 [ext_resource type="Script" uid="uid://7k5lvwfwfhde" path="res://Scripts/Cameras/OrbitalCamera.cs" id="3_lquwl"]
@@ -12,6 +12,7 @@
 [ext_resource type="Script" uid="uid://bonirufu680qn" path="res://Scripts/Planet/EnvironmentManager.cs" id="9_kek77"]
 [ext_resource type="PackedScene" uid="uid://dtj8mcnxoandt" path="res://PoiVisual.tscn" id="10_4c57u"]
 [ext_resource type="Script" uid="uid://bjuspj42r5byq" path="res://Scripts/WorldBuilder.cs" id="11_dg77c"]
+[ext_resource type="Script" uid="uid://bv8gkuxc0sk8s" path="res://Scripts/Agents/AgentDirector.cs" id="13_ycdy4"]
 
 [sub_resource type="Resource" id="Resource_ycdy4"]
 script = ExtResource("4_dg77c")
@@ -36,12 +37,11 @@ instance_count = 10
 mesh = SubResource("QuadMesh_dg77c")
 buffer = PackedFloat32Array(0, 0, 0.14699998, 0.16799998, 0.203, 1, 0, 0, 0, 0, 0.14699998, 0.16799998, 0.203, 1, 0, 0, 1164, 0, 0.14699998, 0.16799998, 0.203, 1, 1, 0, 1164, 0, 0.14699998, 0.16799998, 0.203, 1, 1, 0, 1164, 660, 0.14699998, 0.16799998, 0.203, 1, 1, 1, 1164, 660, 0.14699998, 0.16799998, 0.203, 1, 1, 1, 0, 660, 0.14699998, 0.16799998, 0.203, 1, 0, 1, 0, 660, 0.14699998, 0.16799998, 0.203, 1, 0, 1, 1.8e-44, 1.7e-44, 4e-45, 1.5e-44, 6e-45, 4e-45, 1.7e-44, 1.5e-44, 6e-45, 1.4e-44, 7e-45, 6e-45, 1.5e-44, 1.4e-44, 7e-45, 1.3e-44)
 
-[node name="Main" type="Node3D" node_paths=PackedStringArray("AgentCompute", "AgentRenderer", "UI", "WorldFactory")]
+[node name="Main" type="Node3D" node_paths=PackedStringArray("UI", "AgentDirector", "WorldFactory")]
 script = ExtResource("1_4c57u")
-AgentCompute = NodePath("AgentSystem")
-AgentRenderer = NodePath("AgentRender")
 UI = NodePath("CanvasLayer")
 Config = SubResource("Resource_ycdy4")
+AgentDirector = NodePath("AgentDirector")
 WorldFactory = NodePath("WorldBuilder")
 
 [node name="MeshInstance3D2" type="MeshInstance3D" parent="."]
@@ -110,3 +110,9 @@ PoiMeshScene = ExtResource("10_4c57u")
 script = ExtResource("11_dg77c")
 PlanetPrefab = ExtResource("4_efxa6")
 PoiVisualPrefab = ExtResource("10_4c57u")
+
+[node name="AgentDirector" type="Node3D" parent="." node_paths=PackedStringArray("ComputeSystem", "RenderSystem", "UI")]
+script = ExtResource("13_ycdy4")
+ComputeSystem = NodePath("../AgentSystem")
+RenderSystem = NodePath("../AgentRender")
+UI = NodePath("../CanvasLayer")

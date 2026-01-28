@@ -15,7 +15,7 @@ public struct AgentDataSphere
 public partial class AgentSystem : Node3D
 {
 	[Export] public RDShaderFile ComputeShaderFile;
-	[Export] public int AgentCount = 500_000;
+	[Export] public int AgentCount = 5_000;
 	
 	// Referencias internas
 	// private MultiMeshInstance3D _visualizer;
@@ -251,9 +251,6 @@ public partial class AgentSystem : Node3D
 
 
 
-
-
-	
 	// --- IMPLEMENTACIÓN INTERNA ---
 
 	
@@ -474,70 +471,6 @@ public partial class AgentSystem : Node3D
 			GD.PrintErr("[AgentSystem] Falló UniformSetCreate. Revisa los tipos de variable.");
 	}
 
-	// private void SetupVisuals()
-	// {
-	// 	GD.Print("[AgentSystem] SetupVisuals");
-
-	// 	// Buscar o crear el visualizer
-	// 	if (_visualizer == null)
-	// 	{
-	// 		_visualizer = GetNodeOrNull<MultiMeshInstance3D>("AgentVisualizer");
-	// 		if (_visualizer == null) {
-	// 			_visualizer = new MultiMeshInstance3D { Name = "AgentVisualizer" };
-	// 			AddChild(_visualizer);
-	// 		}
-	// 	}
-		
-	// 	_visualizer.Visible = true;
-
-	// 	// Crear el ShaderMaterial PRIMERO
-	// 	var agentMat = new ShaderMaterial();
-	// 	var shader = GD.Load<Shader>("res://Shaders/Visual/agent_render.gdshader");
-	// 	if (shader == null) {
-	// 		GD.PrintErr("[AgentSystem] ERROR: No se pudo cargar el shader agent_render.gdshader");
-	// 		return;
-	// 	}
-	// 	agentMat.Shader = shader;
-		
-	// 	// Configurar los uniforms del shader
-	// 	if (_posTextureRef != null && _posTextureRef.TextureRdRid.IsValid) {
-	// 		agentMat.SetShaderParameter("agent_pos_texture", _posTextureRef);
-	// 		GD.Print("[AgentSystem] Textura de posiciones asignada al material.");
-	// 	} else {
-	// 		GD.PrintErr("[AgentSystem] ERROR: _posTextureRef es null o RID inválido");
-	// 	}
-		
-	// 	if (_colorTextureRef != null && _colorTextureRef.TextureRdRid.IsValid) {
-	// 		agentMat.SetShaderParameter("agent_color_texture", _colorTextureRef);
-	// 		GD.Print("[AgentSystem] Textura de colores asignada al material.");
-	// 	} else {
-	// 		GD.PrintErr("[AgentSystem] ERROR: _colorTextureRef es null o RID inválido");
-	// 	}
-		
-	// 	agentMat.SetShaderParameter("tex_width", DATA_TEX_WIDTH);
-	// 	agentMat.SetShaderParameter("agent_radius_visual", 1.5f);
-
-	// 	// Crear el QuadMesh y asignar el material a la superficie 0
-	// 	var quadMesh = new QuadMesh { 
-	// 		Size = new Vector2(1.0f, 1.0f), 
-	// 		Orientation = QuadMesh.OrientationEnum.Z
-	// 	};
-	// 	quadMesh.SurfaceSetMaterial(0, agentMat);
-
-	// 	// Crear el MultiMesh
-	// 	_visualizer.Multimesh = new MultiMesh
-	// 	{
-	// 		TransformFormat = MultiMesh.TransformFormatEnum.Transform3D,
-	// 		UseColors = false,
-	// 		InstanceCount = AgentCount,
-	// 		Mesh = quadMesh
-	// 	};
-		
-	// 	// AABB muy grande para evitar culling
-	// 	_visualizer.Multimesh.CustomAabb = new Aabb(new Vector3(-50000, -50000, -50000), new Vector3(100000, 100000, 100000));
-		
-	// 	GD.Print("[AgentSystem] SetupVisuals completado. Material con texturas asignado.");
-	// }
 
 	private byte[] StructureToByteArray(AgentDataSphere[] data) {
 		int structSize = Marshal.SizeOf<AgentDataSphere>();
@@ -575,11 +508,6 @@ public partial class AgentSystem : Node3D
 		// Pipeline y Samplers se limpian a menudo con el contexto, pero se pueden añadir si hay leaks.
 	}
 
-
-	// --- DENTRO DE AgentSystem.cs ---
-
-	
-	// --- LOCALIZACIÓN: AgentSystem.cs -> Método SpawnAgent() ---
 
 	public void SpawnAgent(Vector3 worldPos, int index)
 	{ 
@@ -638,36 +566,36 @@ public partial class AgentSystem : Node3D
 
 	// --- AÑADIR AL FINAL DE LA CLASE AgentSystem ---
 
-	public void SpawnRandomAgents(int count)
-	{
-		var rng = new RandomNumberGenerator();
-		rng.Randomize();
-		int spawnedCount = 0;
+	// public void SpawnRandomAgents(int count)
+	// {
+	// 	var rng = new RandomNumberGenerator();
+	// 	rng.Randomize();
+	// 	int spawnedCount = 0;
 
-		for (int i = 0; i < AgentCount; i++)
-		{
-			if (spawnedCount >= count) break;
+	// 	for (int i = 0; i < AgentCount; i++)
+	// 	{
+	// 		if (spawnedCount >= count) break;
 
-			// Solo usamos slots inactivos (W < 0.1)
-			if (_cpuAgents[i].Position.W < 0.1f)
-			{
-				// Distribución esférica uniforme
-				float phi = rng.Randf() * Mathf.Tau;
-				float cosTheta = rng.RandfRange(-1.0f, 1.0f);
-				float theta = Mathf.Acos(cosTheta);
+	// 		// Solo usamos slots inactivos (W < 0.1)
+	// 		if (_cpuAgents[i].Position.W < 0.1f)
+	// 		{
+	// 			// Distribución esférica uniforme
+	// 			float phi = rng.Randf() * Mathf.Tau;
+	// 			float cosTheta = rng.RandfRange(-1.0f, 1.0f);
+	// 			float theta = Mathf.Acos(cosTheta);
 
-				Vector3 randomDir = new Vector3(
-					Mathf.Sin(theta) * Mathf.Cos(phi),
-					Mathf.Sin(theta) * Mathf.Sin(phi),
-					Mathf.Cos(theta)
-				);
+	// 			Vector3 randomDir = new Vector3(
+	// 				Mathf.Sin(theta) * Mathf.Cos(phi),
+	// 				Mathf.Sin(theta) * Mathf.Sin(phi),
+	// 				Mathf.Cos(theta)
+	// 			);
 
-				SpawnAgent(randomDir * _planetRadius, i);
-				spawnedCount++;
-			}
-		}
-		GD.Print($"[AgentSystem] Spawn masivo completado: {spawnedCount} agentes activados.");
-	}
+	// 			SpawnAgent(randomDir * _planetRadius, i);
+	// 			spawnedCount++;
+	// 		}
+	// 	}
+	// 	GD.Print($"[AgentSystem] Spawn masivo completado: {spawnedCount} agentes activados.");
+	// }
 
 	public Rid GetInfluenceTexture()
 	{
@@ -739,19 +667,11 @@ public partial class AgentSystem : Node3D
 
 
 
-
-
-
 		if (_cpuAgents != null && _cpuAgents.Length > 0)
 		{
 			byte[] initialData = StructureToByteArray(_cpuAgents);
 			_rd.BufferUpdate(_bufferRid, 0, (uint)initialData.Length, initialData);
 		}
-
-
-
-
-
 
 
 		// B. Counter Buffer (Binding 7)

@@ -6,15 +6,17 @@ public partial class Main : Node
 {
 	// --- DEPENDENCIAS EXTERNAS ---
 	[ExportGroup("Sistemas Globales")]
-	[Export] public AgentSystem AgentCompute;
-	[Export] public AgentRender AgentRenderer; // Corregido nombre (camelCase a PascalCase por convención C#)
+	// [Export] public AgentSystem AgentCompute;
+	// [Export] public AgentRender AgentRenderer; // Corregido nombre (camelCase a PascalCase por convención C#)
+	
 	[Export] public SimulationUI UI;
 
-	[Export] public SimulationConfig Config;
 
 	private InputManager _inputManager;
 
 	[ExportGroup("Architecture")]
+	[Export] public SimulationConfig Config;
+	[Export] public AgentDirector AgentDirector;
 	[Export] public WorldBuilder WorldFactory;
 
 
@@ -57,7 +59,12 @@ public partial class Main : Node
 		// SUSCRIPCIONES (Wiring)
 		_inputManager.OnToggleConsole += ToggleConsole;
 		_inputManager.OnResetSimulation += SpawnWorld;
-		_inputManager.OnSpawnAgentRequest += SpawnAgentAtMouse;
+		// Delegamos el input de Spawn directamente al Director
+		_inputManager.OnSpawnAgentRequest += (mousePos) => 
+		{
+			var cam = GetViewport().GetCamera3D();
+			AgentDirector.TrySpawnAgent(cam, mousePos);
+		};
 		
 		// 2. Init Herramientas Compartidas (Flyweight Pattern)
 		// Cargamos el shader una sola vez para todo el juego
@@ -70,6 +77,7 @@ public partial class Main : Node
 
 	private void SpawnWorld()
 	{
+		_isRunning = false;
 		// --- VALIDACIONES DE SEGURIDAD (NUEVO) ---
 		if (WorldFactory == null)
 		{
@@ -111,7 +119,12 @@ public partial class Main : Node
 		AddChild(_activePlanet);
 
 		// --- FASE 4: Inyección a Sistemas ---
-		SetupAgents(_activePlanet);
+		// 3. Inicialización de Agentes (AgentDirector)
+		// Main solo dice: "Director, aquí está el nuevo mundo y la config. Haz tu trabajo."
+		AgentDirector.OnWorldCreated(_rd, _activePlanet, Config.GridResolution);
+		// SetupAgents(_activePlanet);
+
+		AgentDirector.SpawnInitialPopulation(10000, _activePlanet.Radius);
 
 		_isRunning = true;
 		GD.Print("[Main] Mundo Inicializado y Simulación Activa.");
@@ -150,63 +163,63 @@ public partial class Main : Node
 
 
 
-	private void SetupAgents(Planet planet)
-	{
+	// private void SetupAgents(Planet planet)
+	// {
 
-		// --- VALIDACIÓN DEFENSIVA ---
-		var env = planet.Env;
-		if (env == null || !env.POIBuffer.IsValid || !env.InfluenceTexture.IsValid) {
-			GD.PrintErr("[Main] CRÍTICO: EnvironmentManager inválido o incompleto.");
-			return;
-		}
+	// 	// --- VALIDACIÓN DEFENSIVA ---
+	// 	var env = planet.Env;
+	// 	if (env == null || !env.POIBuffer.IsValid || !env.InfluenceTexture.IsValid) {
+	// 		GD.PrintErr("[Main] CRÍTICO: EnvironmentManager inválido o incompleto.");
+	// 		return;
+	// 	}
 		
 		
-		// --- INICIALIZACIÓN DE CÓMPUTO ---
-		AgentCompute.Initialize(_rd, planet, env, planet.GetParams(), Config.GridResolution);
+	// 	// --- INICIALIZACIÓN DE CÓMPUTO ---
+	// 	AgentCompute.Initialize(_rd, planet, env, planet.GetParams(), Config.GridResolution);
 		
-		if (!AgentCompute.IsInitialized) {
-			GD.PrintErr("[Main] CRÍTICO: AgentSystem falló al inicializar.");
-			return;
-		}
+	// 	if (!AgentCompute.IsInitialized) {
+	// 		GD.PrintErr("[Main] CRÍTICO: AgentSystem falló al inicializar.");
+	// 		return;
+	// 	}
 		
-		// --- CONFIGURACIÓN DE RENDER ---
-		var posRid = AgentCompute.GetPosTextureRid();
-		var colRid = AgentCompute.GetColorTextureRid();
+	// 	// --- CONFIGURACIÓN DE RENDER ---
+	// 	var posRid = AgentCompute.GetPosTextureRid();
+	// 	var colRid = AgentCompute.GetColorTextureRid();
 		
-		if (!posRid.IsValid || !colRid.IsValid) {
-			GD.PrintErr("[Main] CRÍTICO: RIDs de texturas inválidos.");
-			return;
-		}
+	// 	if (!posRid.IsValid || !colRid.IsValid) {
+	// 		GD.PrintErr("[Main] CRÍTICO: RIDs de texturas inválidos.");
+	// 		return;
+	// 	}
 
-		// 1. Desconectar AgentRenderer de Main (o de su padre actual)
-		// GetParent() nos devuelve Main. Lo removemos de su lista de hijos.
-		AgentRenderer.GetParent()?.RemoveChild(AgentRenderer);
+	// 	// 1. Desconectar AgentRenderer de Main (o de su padre actual)
+	// 	// GetParent() nos devuelve Main. Lo removemos de su lista de hijos.
+	// 	AgentRenderer.GetParent()?.RemoveChild(AgentRenderer);
 
-		// 2. Conectarlo al Planeta
-		// Ahora AgentRenderer viaja con el planeta.
-		planet.AddChild(AgentRenderer);
+	// 	// 2. Conectarlo al Planeta
+	// 	// Ahora AgentRenderer viaja con el planeta.
+	// 	planet.AddChild(AgentRenderer);
 
-		// 3. Resetear Transformaciones (CRÍTICO)
-		// Al cambiar de padre, queremos que esté en el centro exacto del nuevo padre.
-		AgentRenderer.Position = Vector3.Zero;
-		AgentRenderer.Rotation = Vector3.Zero;
-		AgentRenderer.Scale = Vector3.One;
+	// 	// 3. Resetear Transformaciones (CRÍTICO)
+	// 	// Al cambiar de padre, queremos que esté en el centro exacto del nuevo padre.
+	// 	AgentRenderer.Position = Vector3.Zero;
+	// 	AgentRenderer.Rotation = Vector3.Zero;
+	// 	AgentRenderer.Scale = Vector3.One;
 
-
-		
-
-		AgentRenderer.GetParent()?.RemoveChild(AgentRenderer);
-		planet.AddChild(AgentRenderer);
-
-		// Resetear transform del render para que coincida con el centro del planeta
-		AgentRenderer.Position = Vector3.Zero;
-		AgentRenderer.Rotation = Vector3.Zero;
 
 		
-		AgentRenderer.Initialize(posRid, colRid, AgentCompute.AgentCount);
+
+	// 	AgentRenderer.GetParent()?.RemoveChild(AgentRenderer);
+	// 	planet.AddChild(AgentRenderer);
+
+	// 	// Resetear transform del render para que coincida con el centro del planeta
+	// 	AgentRenderer.Position = Vector3.Zero;
+	// 	AgentRenderer.Rotation = Vector3.Zero;
+
 		
-		GD.Print($"[Main] {AgentCompute.AgentCount} Agentes conectados al sistema.");
-	}
+	// 	AgentRenderer.Initialize(posRid, colRid, AgentCompute.AgentCount);
+		
+	// 	GD.Print($"[Main] {AgentCompute.AgentCount} Agentes conectados al sistema.");
+	// }
 	
 
 	public override void _Process(double delta)
@@ -215,51 +228,53 @@ public partial class Main : Node
 		
 		// Loop de simulación
 		double time = Time.GetTicksMsec() / 1000.0;
+
+		AgentDirector.OnProcess(delta, time);
 		
-		if (AgentCompute != null)
-		{
-			AgentCompute.UpdateSimulation(delta, time);
+		// if (AgentCompute != null)
+		// {
+		// 	AgentCompute.UpdateSimulation(delta, time);
 			
-			// Actualizar UI
-			if (UI != null) UI.UpdateStats(delta, (int)AgentCompute.ActiveAgentCount);
-		}
+		// 	// Actualizar UI
+		// 	if (UI != null) UI.UpdateStats(delta, (int)AgentCompute.ActiveAgentCount);
+		// }
 	}
 
 
-	private void SpawnAgentAtMouse(Vector2 mousePos)
-	{
-		GD.Print("SpawnAgentsAtMouse");
-		if (_activePlanet == null) return;
+	// private void SpawnAgentAtMouse(Vector2 mousePos)
+	// {
+	// 	GD.Print("SpawnAgentsAtMouse");
+	// 	if (_activePlanet == null) return;
 
-		var camera = GetViewport().GetCamera3D();
-		Vector3 rayOrigin = camera.ProjectRayOrigin(mousePos);
-		Vector3 rayDir = camera.ProjectRayNormal(mousePos);
+	// 	var camera = GetViewport().GetCamera3D();
+	// 	Vector3 rayOrigin = camera.ProjectRayOrigin(mousePos);
+	// 	Vector3 rayDir = camera.ProjectRayNormal(mousePos);
 
-		// Delegamos la matemática al Planeta. Main no calcula esferas.
-		if (_activePlanet.RaycastHit(rayOrigin, rayDir, out Vector3 hitPoint))
-		{
-			// --- BLOQUE DE DEBUG VISUAL ---
-			// var debugSphere = new MeshInstance3D();
-			// debugSphere.Mesh = new SphereMesh { Radius = 2.0f, Height = 4.0f }; // Tamaño visible
-			// debugSphere.MaterialOverride = new StandardMaterial3D { AlbedoColor = Colors.Red, EmissionEnabled = true, Emission = Colors.Red, EmissionEnergyMultiplier = 2.0f };
-			// AddChild(debugSphere);
-			// debugSphere.GlobalPosition = hitPoint;
+	// 	// Delegamos la matemática al Planeta. Main no calcula esferas.
+	// 	if (_activePlanet.RaycastHit(rayOrigin, rayDir, out Vector3 hitPoint))
+	// 	{
+	// 		// --- BLOQUE DE DEBUG VISUAL ---
+	// 		// var debugSphere = new MeshInstance3D();
+	// 		// debugSphere.Mesh = new SphereMesh { Radius = 2.0f, Height = 4.0f }; // Tamaño visible
+	// 		// debugSphere.MaterialOverride = new StandardMaterial3D { AlbedoColor = Colors.Red, EmissionEnabled = true, Emission = Colors.Red, EmissionEnergyMultiplier = 2.0f };
+	// 		// AddChild(debugSphere);
+	// 		// debugSphere.GlobalPosition = hitPoint;
 			
-			// // Auto-destruir en 2 segundos para no llenar la memoria
-			// GetTree().CreateTimer(2.0f).Connect("timeout", Callable.From(debugSphere.QueueFree));
-			// // -----------------------------
+	// 		// // Auto-destruir en 2 segundos para no llenar la memoria
+	// 		// GetTree().CreateTimer(2.0f).Connect("timeout", Callable.From(debugSphere.QueueFree));
+	// 		// // -----------------------------
 
-			Vector3 localHit = _activePlanet.ToLocal(hitPoint);
+	// 		Vector3 localHit = _activePlanet.ToLocal(hitPoint);
 
 		
-			// "Revivimos" un agente en esa posición
-			AgentCompute.SpawnAgent(localHit, _nextSpawnIndex);
+	// 		// "Revivimos" un agente en esa posición
+	// 		AgentCompute.SpawnAgent(localHit, _nextSpawnIndex);
 			
-			// Ciclo circular para reutilizar agentes (Object Pooling en GPU)
-			_nextSpawnIndex = 4000 + ((_nextSpawnIndex - 4000 + 1) % 1000);
+	// 		// Ciclo circular para reutilizar agentes (Object Pooling en GPU)
+	// 		_nextSpawnIndex = 4000 + ((_nextSpawnIndex - 4000 + 1) % 1000);
 			
-			GD.Print($"[Main] Agente {_nextSpawnIndex} desplegado en: {hitPoint}");		}
-	}
+	// 		GD.Print($"[Main] Agente {_nextSpawnIndex} desplegado en: {hitPoint}");		}
+	// }
 
 		private void ToggleConsole()
 	{
