@@ -71,13 +71,13 @@ public partial class WorldBuilder : Node
             // --- BLOQUE 1: NOISE SETTINGS ---
             NoiseScale = cfg.NoiseScale,
             NoiseHeight = cfg.NoiseHeight,
+            _noisePadding = 0,
             WarpStrength = cfg.WarpStrength,
-            MountainRoughness = cfg.MountainRoughness,
 
             // --- BLOQUE 2: CURVE PARAMS ---
             OceanFloorLevel = cfg.OceanLevel,
-            WeightMultiplier = 2.5f,        // Valor interno (o agrégalo al Config si quieres)
-            GroundDetailFreq = 4.0f,        // Valor interno
+            WeightMultiplier = 5.0f,        // Fuerza de las montañas (aumentado para más relieve)
+            GroundDetailFreq = 100.0f,      // Amplitud del relieve (aumentado para más detalle)
             _padding2 = 0,                  // Basura para alineación
 
             // --- BLOQUE 3: GLOBAL OFFSET ---

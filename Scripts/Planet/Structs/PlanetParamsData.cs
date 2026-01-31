@@ -5,10 +5,10 @@ using System.Runtime.InteropServices; // ¡IMPORTANTE! Añade este using
 public struct PlanetParamsData
 {
 	// --- vec4 noise_settings (16 bytes) ---
-	public float NoiseScale;        // noise_settings.x
-	public float NoiseHeight;       // noise_settings.y
-	public float WarpStrength;      // noise_settings.z
-	public float MountainRoughness; // noise_settings.w (Lacunarity)
+	public float NoiseScale;           // noise_settings.x
+	public float NoiseHeight;          // noise_settings.y
+	public float _noisePadding;        // noise_settings.z (sin usar, padding)
+	public float WarpStrength;         // noise_settings.w
 
 	// --- vec4 curve_params (16 bytes) ---
 	public float OceanFloorLevel;   // curve_params.x
@@ -45,7 +45,7 @@ public struct PlanetParamsData
 	{
 		return $"PlanetParamsData:\n" +
 			$"-- Noise Settings --\n" +
-			$"NoiseScale: {NoiseScale}, NoiseHeight: {NoiseHeight}, WarpStrength: {WarpStrength}, MountainRoughness: {MountainRoughness}\n" +
+			$"NoiseScale: {NoiseScale}, NoiseHeight: {NoiseHeight}, WarpStrength: {WarpStrength}\n" +
 			$"-- Curve Params --\n" +
 			$"OceanFloorLevel: {OceanFloorLevel}, WeightMultiplier: {WeightMultiplier}, GroundDetailFreq: {GroundDetailFreq}, _padding2: {_padding2}\n" +
 			$"-- Global Offset --\n" +

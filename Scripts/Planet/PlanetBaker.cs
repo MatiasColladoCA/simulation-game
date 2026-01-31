@@ -174,8 +174,8 @@ public partial class PlanetBaker : RefCounted // Usamos RefCounted, no Node (Má
 			// vec4 noise_settings (16 bytes)
 			bw.Write(p.NoiseScale);
 			bw.Write(p.NoiseHeight);
+			bw.Write(0.0f);
 			bw.Write(p.WarpStrength);
-			bw.Write(p.MountainRoughness);
 			
 			// vec4 curve_params (16 bytes)
 			bw.Write(p.OceanFloorLevel);
