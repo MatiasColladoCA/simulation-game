@@ -51,13 +51,7 @@ public partial class AgentSystem : Node3D
 
 	private Rid _bakedHeightMap;
 	private Rid _bakedVectorField;
-	// private Rid _poiBufferRid;
-
 	private Rid _deadListBufferRid;
-
-	// private EnvironmentManager _env;
-
-
 
 
 	// --- API PÚBLICA ---
@@ -79,20 +73,7 @@ public partial class AgentSystem : Node3D
 			GD.PrintErr("[AgentSystem] ERROR: VectorField inválido");
 			return;
 		}
-		// if (!env.POIBuffer.IsValid) {
-		// 	GD.PrintErr("[AgentSystem] ERROR: POIBuffer inválido");
-		// 	return;
-		// }
-		// if (!env.InfluenceTexture.IsValid) {
-		// 	GD.PrintErr("[AgentSystem] ERROR: InfluenceTexture inválido");
-		// 	return;
-		// }
 
-		// Asignación desde recursos externos
-		// _bakedHeightMap = planet._heightMapRid;
-		// _bakedVectorField = env.VectorField;
-		// _poiBufferRid = env.POIBuffer;
-		// _densityTextureRid = env.InfluenceTexture;
 		
 		_planetRadius = config.Radius;
 		_noiseScale = config.NoiseScale;
@@ -127,14 +108,6 @@ public partial class AgentSystem : Node3D
 	{
 		if (_rd == null || !_posTextureRid.IsValid) return;
 
-		//  int requiredHeight = Mathf.CeilToInt((float)AgentCount / DATA_TEX_WIDTH);
-		// RDTextureFormat currentFmt = _rd.TextureGetFormat(_posTextureRid);
-		// if (currentFmt.Height != requiredHeight) {
-		// 	// Libera texturas viejas
-		// 	SafeFree(_posTextureRid);
-		// 	SafeFree(_colorTextureRid);
-		// 	// Recrea con nueva altura (copia el código existente de creación de texturas, cambiando Height)
-		// }
 		
 		// Crear imagen inicial con posiciones visibles (radio del planeta)
 		int texHeight = Mathf.CeilToInt((float)AgentCount / DATA_TEX_WIDTH);
@@ -251,11 +224,7 @@ public partial class AgentSystem : Node3D
 	}
 }
 
-
-
 	// --- IMPLEMENTACIÓN INTERNA ---
-
-	
 
 	// Helper para alinear memoria (ponlo en tu clase o en Utils)
 	private int GetAlignedSize(int rawSize, int alignment = 16) {
@@ -540,7 +509,7 @@ public partial class AgentSystem : Node3D
 		
 		_rd.BufferUpdate(_bufferRid, offset, (uint)structSize, data);
 		
-		GD.Print($"[AgentSystem] Agente {index} spawneado en posición local: {worldPos}");
+		// GD.Print($"[AgentSystem] Agente {index} spawneado en posición local: {worldPos}");
 		
 		// DEBUG: Verificar que el dato se escribió correctamente
 		VerifyBufferData(index, agent);
@@ -566,38 +535,6 @@ public partial class AgentSystem : Node3D
 	}
 
 
-	// --- AÑADIR AL FINAL DE LA CLASE AgentSystem ---
-
-	// public void SpawnRandomAgents(int count)
-	// {
-	// 	var rng = new RandomNumberGenerator();
-	// 	rng.Randomize();
-	// 	int spawnedCount = 0;
-
-	// 	for (int i = 0; i < AgentCount; i++)
-	// 	{
-	// 		if (spawnedCount >= count) break;
-
-	// 		// Solo usamos slots inactivos (W < 0.1)
-	// 		if (_cpuAgents[i].Position.W < 0.1f)
-	// 		{
-	// 			// Distribución esférica uniforme
-	// 			float phi = rng.Randf() * Mathf.Tau;
-	// 			float cosTheta = rng.RandfRange(-1.0f, 1.0f);
-	// 			float theta = Mathf.Acos(cosTheta);
-
-	// 			Vector3 randomDir = new Vector3(
-	// 				Mathf.Sin(theta) * Mathf.Cos(phi),
-	// 				Mathf.Sin(theta) * Mathf.Sin(phi),
-	// 				Mathf.Cos(theta)
-	// 			);
-
-	// 			SpawnAgent(randomDir * _planetRadius, i);
-	// 			spawnedCount++;
-	// 		}
-	// 	}
-	// 	GD.Print($"[AgentSystem] Spawn masivo completado: {spawnedCount} agentes activados.");
-	// }
 
 	public Rid GetInfluenceTexture()
 	{
@@ -625,9 +562,6 @@ public partial class AgentSystem : Node3D
 	}
 
 
-	// Asegúrate de tener esta constante definida al inicio de la clase
-	// private const int DATA_TEX_WIDTH = 2048; 
-
 	private void CreateInternalResources()
 	{
 		if (_rd == null) return;
@@ -651,8 +585,6 @@ public partial class AgentSystem : Node3D
 		if (!_posTextureRid.IsValid) _posTextureRid = _rd.TextureCreate(fmt, new RDTextureView(), new Godot.Collections.Array<byte[]>());
 		if (!_colorTextureRid.IsValid) _colorTextureRid = _rd.TextureCreate(fmt, new RDTextureView(), new Godot.Collections.Array<byte[]>());
 		
-		// _posTextureRef = new Texture2Drd { TextureRdRid = _posTextureRid };
-		// _colorTextureRef = new Texture2Drd { TextureRdRid = _colorTextureRid };
 
 		// --- 2. BUFFERS INTERNOS ---
 

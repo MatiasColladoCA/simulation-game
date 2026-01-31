@@ -34,8 +34,6 @@ public class PlanetChunk
         Size = size;
         LodLevel = lod;
 
-        // GD.Print("ADASDASD");
-        // GD.Print(radius);
 
     }
 

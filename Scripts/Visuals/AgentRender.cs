@@ -34,8 +34,6 @@ public partial class AgentRender : MultiMeshInstance3D
         _material.SetShaderParameter("tex_width", DATA_TEX_WIDTH);
         _material.SetShaderParameter("agent_radius_visual", AGENT_RADIUS);
         
-        // DEBUG: Forzar visibilidad inicial si quieres probar
-        // _material.SetShaderParameter("debug_force_visible", true); 
 
         // 4. Configurar MultiMesh (NOSOTROS SOMOS LA INSTANCIA)
         this.Multimesh = new MultiMesh
