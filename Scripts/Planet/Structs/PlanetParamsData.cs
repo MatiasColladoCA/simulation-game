@@ -28,9 +28,9 @@ public struct PlanetParamsData
 
 	// --- vec4 res_offset (16 bytes) ---
 	// El shader espera floats, así que pasamos la resolución como float.
-	public float ResolutionF;       // res_offset.x
+	public float TextureResolution;       // res_offset.x
 	public float Radius;            // res_offset.y
-	public float _padding4;         // res_offset.z (sin usar)
+	public float LogicResolution;         // res_offset.z (sin usar)
 	public float _padding5;         // res_offset.w (sin usar)
 
 	// --- vec4 pad_uv (16 bytes) ---
@@ -53,9 +53,10 @@ public struct PlanetParamsData
 			$"-- Detail Params --\n" +
 			$"DetailFrequency: {DetailFrequency}, RidgeSharpness: {RidgeSharpness}, MaskStart: {MaskStart}, MaskEnd: {MaskEnd}\n" +
 			$"-- Res Offset --\n" +
-			$"ResolutionF: {ResolutionF}, Radius: {Radius}, _padding4: {_padding4}, _padding5: {_padding5}\n" +
+			$"ResolutionF: {TextureResolution}, Radius: {Radius}, _padding4: {LogicResolution}, _padding5: {_padding5}\n" +
 			$"-- Pad UV --\n" +
 			$"_padding6: {_padding6}, _padding7: {_padding7}, _padding8: {_padding8}, _padding9: {_padding9}";
 	}
 
 }
+

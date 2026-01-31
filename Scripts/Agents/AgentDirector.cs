@@ -21,15 +21,15 @@ public partial class AgentDirector : Node
         _currentPlanet = planet;
 
         // A. Validaciones defensivas
-        var env = planet.Env;
-        if (env == null)
-        {
-            GD.PrintErr("[AgentDirector] Environment no listo. Abortando setup de agentes.");
-            return;
-        }
+        // var env = planet.Env;
+        // if (env == null)
+        // {
+        //     GD.PrintErr("[AgentDirector] Environment no listo. Abortando setup de agentes.");
+        //     return;
+        // }
 
         // B. Inicializar Cómputo (GPU)
-        ComputeSystem.Initialize(rd, planet, env, planet.GetParams(), gridResolution);
+        ComputeSystem.Initialize(rd, planet, planet.GetParams(), gridResolution);
         
         if (!ComputeSystem.IsInitialized)
         {
@@ -142,5 +142,10 @@ public partial class AgentDirector : Node
             
             spawnedCount++;
         }
+    }
+
+    public void ClearAgents()
+    {
+        GD.Print("Implementar ClearAgents");
     }
 }

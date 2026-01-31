@@ -51,46 +51,48 @@ public partial class AgentSystem : Node3D
 
 	private Rid _bakedHeightMap;
 	private Rid _bakedVectorField;
-	private Rid _poiBufferRid;
+	// private Rid _poiBufferRid;
 
 	private Rid _deadListBufferRid;
 
-	private EnvironmentManager _env;
+	// private EnvironmentManager _env;
 
 
 
 
 	// --- API PÚBLICA ---
 
-	public void Initialize(RenderingDevice rd, Planet planet, EnvironmentManager env, PlanetParamsData config, int gridResolution)	{
+	public void Initialize(RenderingDevice rd, Planet planet, PlanetParamsData config, int gridResolution)	{
 
 		_rd = rd;
-		_env = env;
+		// _env = env;
 		_gridResolution = gridResolution; // ← CRÍTICO: Asignar antes de usar GRID_TOTAL_CELLS
+		_bakedHeightMap = planet.GetHeightMapRid();
+		_bakedVectorField = planet.GetVectorFieldRid();
 
 		// VALIDAR RECURSOS EXTERNOS PRIMERO
-		if (!planet._heightMapRid.IsValid) {
+		if (!_bakedHeightMap.IsValid) {
 			GD.PrintErr("[AgentSystem] ERROR: HeightMap inválido");
 			return;
 		}
-		if (!env.VectorField.IsValid) {
+		if (!_bakedVectorField.IsValid) {
 			GD.PrintErr("[AgentSystem] ERROR: VectorField inválido");
 			return;
 		}
-		if (!env.POIBuffer.IsValid) {
-			GD.PrintErr("[AgentSystem] ERROR: POIBuffer inválido");
-			return;
-		}
-		if (!env.InfluenceTexture.IsValid) {
-			GD.PrintErr("[AgentSystem] ERROR: InfluenceTexture inválido");
-			return;
-		}
+		// if (!env.POIBuffer.IsValid) {
+		// 	GD.PrintErr("[AgentSystem] ERROR: POIBuffer inválido");
+		// 	return;
+		// }
+		// if (!env.InfluenceTexture.IsValid) {
+		// 	GD.PrintErr("[AgentSystem] ERROR: InfluenceTexture inválido");
+		// 	return;
+		// }
 
 		// Asignación desde recursos externos
-		_bakedHeightMap = planet._heightMapRid;
-		_bakedVectorField = env.VectorField;
-		_poiBufferRid = env.POIBuffer;
-		_densityTextureRid = env.InfluenceTexture;
+		// _bakedHeightMap = planet._heightMapRid;
+		// _bakedVectorField = env.VectorField;
+		// _poiBufferRid = env.POIBuffer;
+		// _densityTextureRid = env.InfluenceTexture;
 		
 		_planetRadius = config.Radius;
 		_noiseScale = config.NoiseScale;
@@ -439,18 +441,18 @@ public partial class AgentSystem : Node3D
 		var uVector = new RDUniform { UniformType = RenderingDevice.UniformType.SamplerWithTexture, Binding = 5 }; 
 		uVector.AddId(_samplerRid); uVector.AddId(_bakedVectorField);
 		
-		// Binding 6: Density 3D (Externo)
-		var uDensity = new RDUniform { UniformType = RenderingDevice.UniformType.Image, Binding = 6 }; 
-		uDensity.AddId(_densityTextureRid);
+		// // Binding 6: Density 3D (Externo)
+		// var uDensity = new RDUniform { UniformType = RenderingDevice.UniformType.Image, Binding = 6 }; 
+		// uDensity.AddId(_densityTextureRid);
 		
 		// Binding 7: Counter
 		var uCounter = new RDUniform { UniformType = RenderingDevice.UniformType.StorageBuffer, Binding = 7 }; 
 		uCounter.AddId(_counterBufferRid);
 		
-		// Binding 8: POIs (Externo)
-		var uPoi = new RDUniform { UniformType = RenderingDevice.UniformType.StorageBuffer, Binding = 8 };
-		if (_poiBufferRid.IsValid) uPoi.AddId(_poiBufferRid);
-		else GD.PrintErr("POI Buffer inválido");
+		// // Binding 8: POIs (Externo)
+		// var uPoi = new RDUniform { UniformType = RenderingDevice.UniformType.StorageBuffer, Binding = 8 };
+		// if (_poiBufferRid.IsValid) uPoi.AddId(_poiBufferRid);
+		// else GD.PrintErr("POI Buffer inválido");
 
 		// --- BINDING 9: DEAD LIST (EL QUE FALTABA) ---
 		var uDeadList = new RDUniform { UniformType = RenderingDevice.UniformType.StorageBuffer, Binding = 9 };
@@ -459,7 +461,7 @@ public partial class AgentSystem : Node3D
 		// 5. CREAR UNIFORM SET FINAL
 		// Importante: El orden en el array no importa, pero SÍ importa que estén todos los bindings definidos en el shader
 		var uniforms = new Godot.Collections.Array<RDUniform> { 
-			uAgent, uGrid, uPosTex, uColTex, uHeight, uVector, uDensity, uCounter, uPoi, 
+			uAgent, uGrid, uPosTex, uColTex, uHeight, uVector, uCounter, 
 			uDeadList // <--- NO OLVIDAR AGREGARLO AQUÍ
 		};
 

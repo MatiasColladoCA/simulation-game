@@ -1,11 +1,10 @@
-[gd_scene load_steps=8 format=3 uid="uid://xqf0drumhvq8"]
+[gd_scene load_steps=7 format=3 uid="uid://xqf0drumhvq8"]
 
 [ext_resource type="Script" uid="uid://cg4ljdid7oydi" path="res://Scripts/Planet/Planet.cs" id="1_r4cus"]
 [ext_resource type="Script" uid="uid://cfigf47cpsynr" path="res://Scripts/Planet/PlanetRender.cs" id="2_hv4ym"]
 [ext_resource type="Shader" uid="uid://do130edlk53yy" path="res://Shaders/Visual/planet_render.gdshader" id="3_00w7n"]
 [ext_resource type="PackedScene" uid="uid://dtj8mcnxoandt" path="res://PoiVisual.tscn" id="3_hv4ym"]
 [ext_resource type="RDShaderFile" uid="uid://c3nhofkxnuwaa" path="res://Shaders/Compute/planet_baker.glsl" id="4_00w7n"]
-[ext_resource type="Script" uid="uid://bonirufu680qn" path="res://Scripts/Planet/EnvironmentManager.cs" id="6_00w7n"]
 
 [sub_resource type="ShaderMaterial" id="ShaderMaterial_iipid"]
 render_priority = 0
@@ -24,14 +23,13 @@ shader_parameter/color_grass = Vector3(0.25, 0.4, 0.35)
 shader_parameter/color_rock = Vector3(0.4, 0.35, 0.3)
 shader_parameter/color_snow = Vector3(0.9, 0.9, 0.95)
 
-[node name="PlanetRoot" type="Node3D" node_paths=PackedStringArray("PoiContainer", "Renderer", "Env")]
+[node name="PlanetRoot" type="Node3D" node_paths=PackedStringArray("PoiContainer", "Renderer")]
 script = ExtResource("1_r4cus")
 PoiContainer = NodePath("PoiContainer")
 BakerShader = ExtResource("4_00w7n")
 PoiVisualScene = ExtResource("3_hv4ym")
 Renderer = NodePath("TerrainContainer")
 _planetMaterial = SubResource("ShaderMaterial_iipid")
-Env = NodePath("EnvironmentManager")
 
 [node name="TerrainContainer" type="Node3D" parent="."]
 script = ExtResource("2_hv4ym")
@@ -40,7 +38,3 @@ VisualShader = ExtResource("3_00w7n")
 [node name="TerrainMesh" type="Node3D" parent="TerrainContainer"]
 
 [node name="PoiContainer" type="Node3D" parent="."]
-
-[node name="EnvironmentManager" type="Node3D" parent="."]
-script = ExtResource("6_00w7n")
-PoiMeshScene = ExtResource("3_hv4ym")

@@ -1,246 +1,229 @@
-
 using Godot;
 using System;
-using System.IO; 
+using System.IO;
 using System.Runtime.InteropServices;
 
-public partial class PlanetBaker : Node
+/// <summary>
+/// Worker de vida corta. Se instancia, hornea y muere.
+/// No guarda estado. No posee los recursos que crea.
+/// </summary>
+public partial class PlanetBaker : RefCounted // Usamos RefCounted, no Node (Más ligero)
 {
-	// --- CONFIGURACIÓN ---
-	public RDShaderFile BakerShaderFile;
-
-	// Estado interno para la generación
-	private PlanetParamsData _cachedParams;
-	private Rid _paramsBuffer; // Buffer reutilizable si hiciéramos rebake continuo
-	
-	// Constantes
 	private const float FIXED_POINT_SCALE = 100000.0f;
 
-	// DTO (Data Transfer Object) para devolver todo el paquete al Planet
 	public struct BakeResult
 	{
 		public bool Success;
 		public Rid HeightMapRid;
-		public Rid VectorFieldRid;
 		public Rid NormalMapRid;
+		public Rid VectorFieldRid;
+		public byte[] HeightMapRawBytes; // Datos crudos para CPU Cache
+		public int Resolution;
 		public float MinHeight;
 		public float MaxHeight;
 	}
 
-	// Setter simple
-	public void SetParams(PlanetParamsData config)
+	/// <summary>
+	/// Ejecuta el pipeline de generación de terreno en GPU.
+	/// </summary>
+	public BakeResult Bake(RenderingDevice rd, Rid shaderRid, PlanetParamsData config)
 	{
-		_cachedParams = config;
-	}
-
-	// --- FUNCIÓN PRINCIPAL DE GENERACIÓN ---
-	public BakeResult Bake(RenderingDevice rd)
-	{
-
-
-		// TRUCO AAA: Crear un dispositivo local temporal para poder hacer Sync() sin errores
-		// Esto permite bloquear el hilo hasta que termine el cálculo.
-		var localRd = RenderingServer.CreateLocalRenderingDevice();
-
-		// Usamos localRd para TODO dentro de esta función
-		var _rd = localRd;
-
+		GD.Print("[PlanetBaker] Iniciando bake...");
 		
+		// 1. CONFIGURACIÓN
+		int resolution = (int)config.TextureResolution;
+		if (resolution <= 0) resolution = 1024;
 
-		// 2. PREPARAR DATOS
-		float resolution = (float)_cachedParams.ResolutionF;
-		
-		// Crear/Actualizar Buffer de Parámetros
-		// Usamos BinaryWriter para asegurar el layout std140 byte a byte
-		byte[] paramBytes = GenerateParamBytes(resolution);
-		
-		if (_paramsBuffer.IsValid) rd.FreeRid(_paramsBuffer);
-		_paramsBuffer = rd.UniformBufferCreate((uint)paramBytes.Length, paramBytes);
-
-		// 3. CREAR TEXTURAS DE DESTINO (El producto final)
-		// Nota: R32Sfloat para altura (precisión), R16g16... para normales/vectores
-		var fmtHeight = new RDTextureFormat {
-			Width = (uint)resolution, Height = (uint)resolution, Depth = 1, ArrayLayers = 6,
-			TextureType = RenderingDevice.TextureType.Cube, 
-			Format = RenderingDevice.DataFormat.R32Sfloat,
-			UsageBits = RenderingDevice.TextureUsageBits.StorageBit | RenderingDevice.TextureUsageBits.SamplingBit
+		// 2. CREAR TEXTURAS (CUBEMAPS)
+		// HeightMap: R32F (Alta precisión para física)
+		var fmtHeight = new RDTextureFormat
+		{
+			TextureType = RenderingDevice.TextureType.Cube,
+			Width = (uint)resolution, Height = (uint)resolution, 
+			Depth = 1, ArrayLayers = 6,
+			Format = RenderingDevice.DataFormat.R32Sfloat, // 4 bytes por pixel
+			UsageBits = RenderingDevice.TextureUsageBits.StorageBit | 
+						RenderingDevice.TextureUsageBits.SamplingBit | 
+						RenderingDevice.TextureUsageBits.CanCopyFromBit // Crucial para CPU Readback
 		};
-		
-		// ¡OJO! En Godot 4 C#, los formatos suelen ser R16g16b16a16Sfloat (minúsculas)
-		var fmtVector = new RDTextureFormat {
-			Width = (uint)resolution, Height = (uint)resolution, Depth = 1, ArrayLayers = 6,
-			TextureType = RenderingDevice.TextureType.Cube, 
+
+		// NormalMap/VectorField: RGBA16F (Vectores)
+		var fmtVector = new RDTextureFormat
+		{
+			TextureType = RenderingDevice.TextureType.Cube,
+			Width = (uint)resolution, Height = (uint)resolution, 
+			Depth = 1, ArrayLayers = 6,
 			Format = RenderingDevice.DataFormat.R16G16B16A16Sfloat,
-			UsageBits = RenderingDevice.TextureUsageBits.StorageBit | RenderingDevice.TextureUsageBits.SamplingBit
+			UsageBits = RenderingDevice.TextureUsageBits.StorageBit | 
+						RenderingDevice.TextureUsageBits.SamplingBit
 		};
 
-		// Creamos las texturas (Empty arrays porque las llenará la GPU)
-		var hMap = rd.TextureCreate(fmtHeight, new RDTextureView());
-		var vMap = rd.TextureCreate(fmtVector, new RDTextureView()); // Binding 1
-		var nMap = rd.TextureCreate(fmtVector, new RDTextureView()); // Binding 2
+		Rid hMap = rd.TextureCreate(fmtHeight, new RDTextureView());
+		Rid nMap = rd.TextureCreate(fmtVector, new RDTextureView());
+		Rid vMap = rd.TextureCreate(fmtVector, new RDTextureView()); 
 
-		// 4. BUFFER DE ESTADÍSTICAS (Min/Max height)
-		// Inicializamos con inversa (MaxInt, MinInt) para que el shader escriba valores reales
-		int[] initialStats = { int.MaxValue, int.MinValue };
+		// 3. BUFFERS (Params & Stats)
+		
+		// Params (Uniform Buffer std140 - 96 bytes total)
+		byte[] paramBytes = GenerateParamBytes(config);
+		Rid paramsBuffer = rd.UniformBufferCreate((uint)paramBytes.Length, paramBytes);
+
+		// Stats (Storage Buffer - Atomic Min/Max)
+		int[] initialStats = { int.MaxValue, int.MinValue }; // Min, Max (Int escalado)
 		byte[] statsBytes = new byte[8];
 		Buffer.BlockCopy(initialStats, 0, statsBytes, 0, 8);
-		var statsBuffer = rd.StorageBufferCreate((uint)statsBytes.Length, statsBytes);
+		Rid statsBuffer = rd.StorageBufferCreate((uint)statsBytes.Length, statsBytes);
 
-		// 5. CONFIGURAR PIPELINE
-		var shaderSpirv = BakerShaderFile.GetSpirV();
-		var shaderRid = rd.ShaderCreateFromSpirV(shaderSpirv);
-		
+		// 4. PIPELINE Y UNIFORMS
 		if (!shaderRid.IsValid)
 		{
-			GD.PrintErr("[PlanetBaker] ERROR: El shader no compiló.");
-			CleanupGenerators(rd, hMap, vMap, nMap, statsBuffer);
+			GD.PrintErr("[Baker] Shader RID inválido.");
 			return new BakeResult { Success = false };
 		}
+		Rid pipeline = rd.ComputePipelineCreate(shaderRid);
 
-		var pipeline = rd.ComputePipelineCreate(shaderRid);
-		
-		// 6. UNIFORM SET (La conexión C# -> GLSL)
-		// El orden debe coincidir estrictamente con los bindings del GLSL
+		// Uniforms (Orden estricto del GLSL)
+		// Binding 0: HeightMap (Image)
+		// Binding 1: VectorMap (Image)
+		// Binding 2: NormalMap (Image)
+		// Binding 3: Stats (Storage)
+		// Binding 4: Params (Uniform)
+		var uHeight = CreateImageUniform(hMap, 0);
+		var uVec    = CreateImageUniform(vMap, 1);
+		var uNorm   = CreateImageUniform(nMap, 2);
+		var uStats  = CreateBufferUniform(statsBuffer, 3, RenderingDevice.UniformType.StorageBuffer);
+		var uParams = CreateBufferUniform(paramsBuffer, 4, RenderingDevice.UniformType.UniformBuffer);
 
-		// Definimos cada uniform explícitamente y añadimos su ID
-		var uHeight = new RDUniform { UniformType = RenderingDevice.UniformType.Image, Binding = 0 };
-		uHeight.AddId(hMap);
+		Rid uniformSet = rd.UniformSetCreate(
+			new Godot.Collections.Array<RDUniform> { uHeight, uVec, uNorm, uStats, uParams }, 
+			shaderRid, 0
+		);
 
-		var uVec = new RDUniform { UniformType = RenderingDevice.UniformType.Image, Binding = 1 };
-		uVec.AddId(vMap);
-
-		var uNorm = new RDUniform { UniformType = RenderingDevice.UniformType.Image, Binding = 2 };
-		uNorm.AddId(nMap);
-
-		var uStats = new RDUniform { UniformType = RenderingDevice.UniformType.StorageBuffer, Binding = 3 };
-		uStats.AddId(statsBuffer);
-
-		var uParams = new RDUniform { UniformType = RenderingDevice.UniformType.UniformBuffer, Binding = 4 };
-		uParams.AddId(_paramsBuffer);
-
-
-		// Creamos el set pasando la lista
-		var uniformSet = rd.UniformSetCreate(new Godot.Collections.Array<RDUniform> { 
-			uHeight, uVec, uNorm, uStats, uParams 
-		}, shaderRid, 0);
-
-		if (!uniformSet.IsValid)
-		{
-			GD.PrintErr("[PlanetBaker] ERROR: UniformSet inválido. Revisa bindings y tipos.");
-			CleanupGenerators(rd, hMap, vMap, nMap, statsBuffer, pipeline, shaderRid);
-			return new BakeResult { Success = false };
-		}
-
-		// 7. EJECUCIÓN (DISPATCH)
+		// 5. EJECUCIÓN (DISPATCH)
 		long computeList = rd.ComputeListBegin();
 		rd.ComputeListBindComputePipeline(computeList, pipeline);
 		rd.ComputeListBindUniformSet(computeList, uniformSet, 0);
 		
-		uint groups = (uint)Mathf.CeilToInt(resolution / 8.0f); 
-		rd.ComputeListDispatch(computeList, groups, groups, 6); // 6 caras del cubo
-		rd.ComputeListAddBarrier(computeList);
+		uint groups = (uint)Mathf.CeilToInt(resolution / 8.0f);
+		rd.ComputeListDispatch(computeList, groups, groups, 6); // 6 caras
 		rd.ComputeListEnd();
 
-		// rd.Submit();
-		// rd.Sync(); // Esperamos para leer las stats (Bloqueante, necesario para física inicial)
+		// 6. LECTURA DE RESULTADOS (Readback)
 
-		// 8. LECTURA DE RESULTADOS
+		// A. Stats (Min/Max Height)
+		byte[] outStats = rd.BufferGetData(statsBuffer);
+		float realMin = BitConverter.ToInt32(outStats, 0) / FIXED_POINT_SCALE;
+		float realMax = BitConverter.ToInt32(outStats, 4) / FIXED_POINT_SCALE;
 		
-		byte[] outBytes = rd.BufferGetData(statsBuffer);
-		float realMin = BitConverter.ToInt32(outBytes, 0) / FIXED_POINT_SCALE;
-		float realMax = BitConverter.ToInt32(outBytes, 4) / FIXED_POINT_SCALE;
-
-		// Validación de seguridad por si el shader falló silenciosamente
+		// Validación de seguridad (evitar NaN o inf)
+		if (float.IsNaN(realMin) || float.IsInfinity(realMin)) realMin = 0;
+		if (float.IsNaN(realMax) || float.IsInfinity(realMax)) realMax = 1;
 		if (realMax < realMin) { realMin = 0; realMax = 1; }
 
-		// 9. LIMPIEZA DE HERRAMIENTAS (No borramos las texturas, esas se devuelven)
-		rd.FreeRid(pipeline);
-		rd.FreeRid(shaderRid);
-		rd.FreeRid(statsBuffer);
-		// El _paramsBuffer lo guardamos por si queremos reutilizarlo, se libera en Dispose
+		// B. HeightMap Raw Bytes - Descargar las 6 caras
+		int bytesPerPixel = 4; // R32F = 4 bytes
+		int bytesPerFace = resolution * resolution * bytesPerPixel;
+		byte[] fullHeightData = new byte[bytesPerFace * 6];
 
-		GD.Print($"[Baker] Resultado GPU -> MinHeight: {realMin}, MaxHeight: {realMax}");
-
-		// Verificación de integridad: Si el mapa es plano absoluto (0 a 0), algo falló en el shader.
-		// Nota: A veces es válido ser plano, pero en tu generación procedural es casi imposible.
-		if (Mathf.IsEqualApprox(realMin, 0) && Mathf.IsEqualApprox(realMax, 0))
+		for (uint i = 0; i < 6; i++)
 		{
-			GD.Print("[Baker] ALERTA: El terreno generado es totalmente plano (0m). ¿Falló el Compute Shader o los Uniforms?");
-			// No retornamos false aquí porque quizás querías un planeta plano, pero avisamos.
+			byte[] layerData = rd.TextureGetData(hMap, i);
+			if (layerData.Length < bytesPerFace)
+			{
+				GD.PrintErr($"[Baker] Error: Capa {i} devolvió menos bytes ({layerData.Length} vs {bytesPerFace}).");
+				Array.Clear(fullHeightData, (int)i * bytesPerFace, bytesPerFace);
+			}
+			else
+			{
+				Array.Copy(layerData, 0, fullHeightData, i * bytesPerFace, bytesPerFace);
+			}
 		}
 
-		return new BakeResult {
+		// 7. LIMPIEZA DE RECURSOS TEMPORALES
+		rd.FreeRid(pipeline);
+		rd.FreeRid(uniformSet);
+		rd.FreeRid(paramsBuffer);
+		rd.FreeRid(statsBuffer);
+
+		GD.Print($"[Baker] Bake Terminado. Rango: {realMin:F1}m a {realMax:F1}m");
+
+		return new BakeResult
+		{
 			Success = true,
 			HeightMapRid = hMap,
+			HeightMapRawBytes = fullHeightData,
 			VectorFieldRid = vMap,
 			NormalMapRid = nMap,
+
 			MinHeight = realMin,
-			MaxHeight = realMax
+			MaxHeight = realMax,
+			Resolution = resolution
 		};
 	}
 
-	// --- HELPERS INTERNOS ---
-
-	private byte[] GenerateParamBytes(float resolution)
+	/// <summary>
+	/// Genera bytes para Uniform Buffer respetando alineación std140.
+	/// Shader espera: noise_settings, curve_params, global_offset, detail_params, res_offset, pad_uv
+	/// Total: 6 vec4 = 96 bytes
+	/// </summary>
+	private byte[] GenerateParamBytes(PlanetParamsData p)
 	{
 		using (var ms = new MemoryStream())
 		using (var bw = new BinaryWriter(ms))
 		{
-			// Block 0: Noise Settings
-			bw.Write(_cachedParams.NoiseScale);
-			bw.Write(0.5f); // Persistence
-			bw.Write(2.0f); // Lacunarity
-			bw.Write(_cachedParams.WarpStrength);
-
-			// Block 1: Curve Params
-			bw.Write(_cachedParams.OceanFloorLevel);
-			bw.Write(_cachedParams.WeightMultiplier);
-			bw.Write(_cachedParams.NoiseHeight);
-			bw.Write(_cachedParams.GroundDetailFreq);
-
-			// Block 2: Global Offset
-			bw.Write(_cachedParams.NoiseOffset.X);
-			bw.Write(_cachedParams.NoiseOffset.Y);
-			bw.Write(_cachedParams.NoiseOffset.Z);
-			bw.Write(0.0f); // Padding
-
-			// Block 3: Detail Params
-			bw.Write(_cachedParams.DetailFrequency);
-			bw.Write(_cachedParams.RidgeSharpness);
-			bw.Write(_cachedParams.MaskStart);
-			bw.Write(_cachedParams.MaskEnd);
-
-			// Block 4: Res & Radius
-			bw.Write(resolution);
-			bw.Write(_cachedParams.Radius);
-			bw.Write(0.0f);
-			bw.Write(0.0f);
-			bw.Write(0.0f);
-			bw.Write(0.0f);
-			bw.Write(0.0f);
-			bw.Write(0.0f);
-
+			// vec4 noise_settings (16 bytes)
+			bw.Write(p.NoiseScale);
+			bw.Write(p.NoiseHeight);
+			bw.Write(p.WarpStrength);
+			bw.Write(p.MountainRoughness);
+			
+			// vec4 curve_params (16 bytes)
+			bw.Write(p.OceanFloorLevel);
+			bw.Write(p.WeightMultiplier);
+			bw.Write(p.GroundDetailFreq);  // curve_params.z - AMPLITUD DEL RELIEVE
+			bw.Write(p._padding2);
+			
+			// vec4 global_offset (16 bytes) - vec3 + padding
+			bw.Write(p.NoiseOffset.X);
+			bw.Write(p.NoiseOffset.Y);
+			bw.Write(p.NoiseOffset.Z);
+			bw.Write(0.0f); // padding
+			
+			// vec4 detail_params (16 bytes)
+			bw.Write(p.DetailFrequency);
+			bw.Write(p.RidgeSharpness);
+			bw.Write(p.MaskStart);
+			bw.Write(p.MaskEnd);
+			
+			// vec4 res_offset (16 bytes)
+			bw.Write(p.TextureResolution);
+			bw.Write(p.Radius);
+			bw.Write(p.LogicResolution);
+			bw.Write(0.0f); // padding
+			
+			// vec4 pad_uv (16 bytes)
+			bw.Write(p._padding6);
+			bw.Write(p._padding7);
+			bw.Write(p._padding8);
+			bw.Write(p._padding9);
+			
 			return ms.ToArray();
 		}
 	}
 
-	private void CleanupGenerators(RenderingDevice rd, params Rid[] rids)
+	// --- HELPERS ---
+
+	private RDUniform CreateImageUniform(Rid textureRid, int binding)
 	{
-		foreach (var rid in rids) if (rid.IsValid) rd.FreeRid(rid);
+		var u = new RDUniform { UniformType = RenderingDevice.UniformType.Image, Binding = binding };
+		u.AddId(textureRid);
+		return u;
 	}
 
-	// Limpieza final al destruir el nodo
-	public override void _ExitTree()
+	private RDUniform CreateBufferUniform(Rid bufferRid, int binding, RenderingDevice.UniformType type)
 	{
-		if (_paramsBuffer.IsValid) 
-			RenderingServer.GetRenderingDevice()?.FreeRid(_paramsBuffer);
-		base._ExitTree();
+		var u = new RDUniform { UniformType = type, Binding = binding };
+		u.AddId(bufferRid);
+		return u;
 	}
-}
-
-// Extensión para facilitar la creación de Uniforms
-public static class UniformExtensions 
-{
-	// Solo un helper visual si quisieras limpiar el código de creación de Uniforms
-	// pero el código inline arriba es suficientemente claro.
 }

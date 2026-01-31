@@ -26,4 +26,31 @@ public partial class SimulationUI : CanvasLayer
 			_timeSinceLastUpdate = 0;
 		}
 	}
+
+	
+	[Export] private LineEdit _consoleInput; // Asignado en Inspector
+
+	// Devuelve 'true' si la consola quedó abierta, 'false' si se cerró
+	public bool ToggleConsole()
+	{
+		if (_consoleInput == null) return false;
+
+		bool isVisible = !_consoleInput.Visible;
+		_consoleInput.Visible = isVisible;
+
+		if (isVisible)
+		{
+			_consoleInput.GrabFocus();
+		}
+		else
+		{
+			_consoleInput.ReleaseFocus();
+			_consoleInput.Text = ""; // Limpiar al cerrar
+		}
+
+		return isVisible;
+	}
+	
+	// Opcional: Para leer comandos desde Main
+	public string GetConsoleText() => _consoleInput?.Text ?? "";
 }

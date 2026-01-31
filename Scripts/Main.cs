@@ -15,19 +15,26 @@ public partial class Main : Node
 	private InputManager _inputManager;
 
 	[ExportGroup("Architecture")]
-	[Export] public SimulationConfig Config;
-	[Export] public AgentDirector AgentDirector;
-	[Export] public WorldBuilder WorldFactory;
+	[Export] public SimulationConfig Config; // (Datos)
+	[Export] public AgentDirector AgentDirector; // (Factory)
+	[Export] public WorldBuilder WorldFactory; // (System)
 
+	// --- SHADER FILES (Arrastrados en el Inspector) ---
+	[ExportGroup("Resources")]
+	// [Export] public RDShaderFile PoiPainterShader;
+	[Export] public RDShaderFile PlanetBakerShader;
+	[Export] public RDShaderFile AgentComputeShader; // El continuo
 
-
-
-
+	// --- HERRAMIENTAS COMPILADAS (RIDs listos para usar) ---
+	// private Rid _poiPainterShaderRid;
+	private Rid _planetBakerShaderRid;
+	private Rid _agentComputeShaderRid;
 
 
 	// --- VARIABLES INTERNAS ---
 	private RenderingDevice _rd;
-	private PoiPainter _sharedPoiPainter;
+	// private PoiPainter _sharedPoiPainter;
+	private PlanetBaker _sharedPlanetBaker;
 	private Planet _activePlanet;
 
 	// private EnvironmentManager Env;
@@ -35,16 +42,14 @@ public partial class Main : Node
 	private int _planetIndex = 0;
 	
 	// UI Helpers
-	private LineEdit _consoleInput;
+	// private LineEdit _consoleInput;
 	// private int _nextSpawnIndex = 0;
 
-	private int _nextSpawnIndex = 40000;
+	// private int _nextSpawnIndex = 40000;
 
 	public override void _Ready()
 	{
 		_rd = RenderingServer.GetRenderingDevice();
-
-		// 1. Verificación de Seguridad
 		if (_rd == null)
 		{
 			GD.PrintErr("[Main] FATAL: RenderingDevice es null. Cambia a Forward+.");
@@ -52,19 +57,29 @@ public partial class Main : Node
 			return;
 		}
 
+		InitializeTools();
+
+		// 2. CREACIÓN DE HERRAMIENTAS (Workers)
+		// Estas herramientas usan los shaders compilados.
+		// _sharedPoiPainter = new PoiPainter(_rd, _poiPainterShaderRid);
+
+		SetupInput();
+		SpawnWorld();
+		
+
 		// SETUP INPUT
-		_inputManager = new InputManager();
-		AddChild(_inputManager); // Lo agregamos al árbol para que reciba inputs
+		// _inputManager = new InputManager();
+		// AddChild(_inputManager); // Lo agregamos al árbol para que reciba inputs
 		
 		// SUSCRIPCIONES (Wiring)
-		_inputManager.OnToggleConsole += ToggleConsole;
-		_inputManager.OnResetSimulation += SpawnWorld;
+		// _inputManager.OnToggleConsole += ToggleConsole;
+		// _inputManager.OnResetSimulation += SpawnWorld;
 		// Delegamos el input de Spawn directamente al Director
-		_inputManager.OnSpawnAgentRequest += (mousePos) => 
-		{
-			var cam = GetViewport().GetCamera3D();
-			AgentDirector.TrySpawnAgent(cam, mousePos);
-		};
+		// _inputManager.OnSpawnAgentRequest += (mousePos) => 
+		// {
+		// 	var cam = GetViewport().GetCamera3D();
+		// 	AgentDirector.TrySpawnAgent(cam, mousePos);
+		// };
 		
 		// 2. Init Herramientas Compartidas (Flyweight Pattern)
 		// Cargamos el shader una sola vez para todo el juego
@@ -72,7 +87,59 @@ public partial class Main : Node
 		// _sharedPoiPainter = new PoiPainter(_rd, shaderFile);
 
 		// 3. Crear el mundo inicial
-		SpawnWorld();
+	}
+
+	private void InitializeTools()
+	{        
+		// _poiPainterShaderRid = CompileShader(PoiPainterShader);
+		_planetBakerShaderRid = CompileShader(PlanetBakerShader);
+		_agentComputeShaderRid = CompileShader(AgentComputeShader);
+	}
+
+	private Rid CompileShader(RDShaderFile source)
+	{
+		if (source == null) return new Rid();
+		var spirv = source.GetSpirV();
+		return _rd.ShaderCreateFromSpirV(spirv);
+	}
+
+	private void SetupInput()
+	{
+		_inputManager = new InputManager();
+		AddChild(_inputManager);
+		
+		_inputManager.OnResetSimulation += SpawnWorld;
+		// _inputManager.OnToggleConsole += ToggleConsole; // Si usas consola
+		
+		// Input de Agentes delegado al Director
+		_inputManager.OnSpawnAgentRequest += (mousePos) => 
+		{
+			if (_activePlanet != null)
+			{
+				var cam = GetViewport().GetCamera3D();
+				AgentDirector.TrySpawnAgent(cam, mousePos);
+			}
+		};
+	}
+
+	private void HandleConsoleToggle()
+	{
+		if (UI == null) return;
+
+		// 1. Delegar la parte visual a la UI
+		bool isConsoleOpen = UI.ToggleConsole();
+
+		// 2. Gestionar el Estado Global (Mouse) en el Main
+		if (isConsoleOpen)
+		{
+			Input.MouseMode = Input.MouseModeEnum.Visible;
+			// _isRunning = false; // Opcional: Pausar juego si quieres
+		}
+		else
+		{
+			Input.MouseMode = Input.MouseModeEnum.Captured;
+			// _isRunning = true;
+		}
 	}
 
 	private void SpawnWorld()
@@ -90,15 +157,21 @@ public partial class Main : Node
 			return;
 		}
 
-		_isRunning = false; // Pausa simulación mientras carga
+		// _isRunning = false; // Pausa simulación mientras carga
 
 		// A. Limpieza anterior si existe
 		if (_activePlanet != null)
 		{
+			AgentDirector.ClearAgents();
+
 			_activePlanet.QueueFree();
 			_activePlanet = null;
 			// Esperar un frame si fuera necesario, pero QueueFree lo maneja
 		}
+
+		// --- 3. CONSTRUCCIÓN (Fase Offline) ---
+		// Main delega TODO el trabajo sucio al Factory.
+		// Solo pasa las herramientas (_rd, _painter) y la ley (Config).
 
 		// B. Configuración
 		if (Config.RandomizeSeed) Config.WorldSeed = (int)DateTime.Now.Ticks;
@@ -107,7 +180,7 @@ public partial class Main : Node
 		// REEMPLAZADO: planetNode = SetupPlanet(WorldSeed); 
 		// REEMPLAZADO: if (!success) { ... }
 		// var newPlanet = SetupPlanet(Config.WorldSeed);
-		var newPlanet = WorldFactory.BuildWorld(_rd, Config, _sharedPoiPainter);
+		var newPlanet = WorldFactory.BuildWorld(_rd, Config, _planetBakerShaderRid);
 
 		if (newPlanet == null)
 		{
@@ -121,7 +194,7 @@ public partial class Main : Node
 		// --- FASE 4: Inyección a Sistemas ---
 		// 3. Inicialización de Agentes (AgentDirector)
 		// Main solo dice: "Director, aquí está el nuevo mundo y la config. Haz tu trabajo."
-		AgentDirector.OnWorldCreated(_rd, _activePlanet, Config.GridResolution);
+		AgentDirector.OnWorldCreated(_rd, _activePlanet, Config.LogicResolution);
 		// SetupAgents(_activePlanet);
 
 		AgentDirector.SpawnInitialPopulation(10000, _activePlanet.Radius);
@@ -132,33 +205,33 @@ public partial class Main : Node
 
 
 	// CAMBIO DE FIRMA: private void SetupPlanet(int WorldSeed)
-	private Planet SetupPlanet(int currentSeed)
-	{
-		int planetSeed = HashCode.Combine(currentSeed, _planetIndex++);
+	// private Planet SetupPlanet(int currentSeed)
+	// {
+	// 	int planetSeed = HashCode.Combine(currentSeed, _planetIndex++);
 		
-		// Asumo que este método existe o es generado localmente
-		var planetConfig = WorldFactory.GeneratePlanetConfig(Config, planetSeed); 
+	// 	// Asumo que este método existe o es generado localmente
+	// 	var planetConfig = WorldFactory.GeneratePlanetConfig(Config, planetSeed); 
 
-		// 1. Instanciar
-		var planetNode = WorldFactory.PlanetPrefab.Instantiate<Planet>();
-		AddChild(planetNode);
+	// 	// 1. Instanciar
+	// 	var planetNode = WorldFactory.PlanetPrefab.Instantiate<Planet>();
+	// 	AddChild(planetNode);
 		
-		// 2. Inyectar dependencias visuales
-		planetNode.PoiVisualScene = WorldFactory.PoiVisualPrefab ?? WorldFactory.PoiMeshPrefab;
+	// 	// 2. Inyectar dependencias visuales
+	// 	planetNode.PoiVisualScene = WorldFactory.PoiVisualPrefab ?? WorldFactory.PoiMeshPrefab;
 
-		// 3. Inicializar Lógica
-		// REEMPLAZADO: bool success = planetNode.Initialize(_rd, planetConfig, _sharedPoiPainter, GridResolution);
-		// REEMPLAZADO: (No retornaba nada)
-		bool success = planetNode.Initialize(_rd, planetConfig, _sharedPoiPainter, Config.GridResolution);
+	// 	// 3. Inicializar Lógica
+	// 	// REEMPLAZADO: bool success = planetNode.Initialize(_rd, planetConfig, _sharedPoiPainter, GridResolution);
+	// 	// REEMPLAZADO: (No retornaba nada)
+	// 	bool success = planetNode.Initialize(_rd, planetConfig, _sharedPoiPainter, Config.GridResolution);
 
-		if (!success)
-		{
-			planetNode.QueueFree();
-			return null;
-		}
+	// 	if (!success)
+	// 	{
+	// 		planetNode.QueueFree();
+	// 		return null;
+	// 	}
 
-		return planetNode;
-	}
+	// 	return planetNode;
+	// }
 
 
 
@@ -276,25 +349,25 @@ public partial class Main : Node
 	// 		GD.Print($"[Main] Agente {_nextSpawnIndex} desplegado en: {hitPoint}");		}
 	// }
 
-		private void ToggleConsole()
-	{
-		if (_consoleInput == null) return;
+	// 	private void ToggleConsole()
+	// {
+	// 	if (_consoleInput == null) return;
 
-		bool isVisible = !_consoleInput.Visible;
-		_consoleInput.Visible = isVisible;
+	// 	bool isVisible = !_consoleInput.Visible;
+	// 	_consoleInput.Visible = isVisible;
 
-		if (isVisible)
-		{
-			_consoleInput.GrabFocus();
-			Input.MouseMode = Input.MouseModeEnum.Visible;
-		}
-		else
-		{
-			_consoleInput.ReleaseFocus();
-			_consoleInput.Text = "";
-			Input.MouseMode = Input.MouseModeEnum.Captured;
-		}
-	}
+	// 	if (isVisible)
+	// 	{
+	// 		_consoleInput.GrabFocus();
+	// 		Input.MouseMode = Input.MouseModeEnum.Visible;
+	// 	}
+	// 	else
+	// 	{
+	// 		_consoleInput.ReleaseFocus();
+	// 		_consoleInput.Text = "";
+	// 		Input.MouseMode = Input.MouseModeEnum.Captured;
+	// 	}
+	// }
 
 
 	// 	private PlanetParamsData GeneratePlanetConfig(int seed)
@@ -463,6 +536,10 @@ public partial class Main : Node
 
 	public override void _ExitTree()
 	{
-		_sharedPoiPainter?.Dispose();
+		// _sharedPoiPainter?.Dispose();
+		// Limpieza centralizada
+		// if (_poiPainterShaderRid.IsValid) _rd.FreeRid(_poiPainterShaderRid);
+		if (_planetBakerShaderRid.IsValid) _rd.FreeRid(_planetBakerShaderRid);
+		if (_agentComputeShaderRid.IsValid) _rd.FreeRid(_agentComputeShaderRid);
 	}
 }
